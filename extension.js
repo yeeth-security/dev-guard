@@ -13,6 +13,15 @@ const fs = require('fs');
 function activate(context) {
     console.log('Extension Security Auditor is now active!');
 
+    // Initial check on startup
+    checkAndReportMaliciousExtensions(context);
+
+    // Subscribe to the onDidChange event
+    context.subscriptions.push(vscode.extensions.onDidChange(() => {
+        console.log('Extension list changed. Re-running security audit...');
+        checkAndReportMaliciousExtensions(context);
+    }));
+
     let disposable = vscode.commands.registerCommand('extension-security-auditor.checkExtensions', () => {
         vscode.window.showInformationMessage('Starting security audit of installed extensions...');
         checkAndReportMaliciousExtensions(context);
