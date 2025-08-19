@@ -1,0 +1,34 @@
+{
+    "name": "extension-security-auditor",
+    "displayName": "Extension Security Auditor",
+    "description": "A simple security auditor for VS Code extensions.",
+    "version": "0.0.1",
+    "publisher": "your-publisher-name",
+    "author": "your-name",
+    "engines": {
+      "vscode": "^1.80.0"
+    },
+    "categories": [
+      "Other"
+    ],
+    "activationEvents": [
+    ],
+    "main": "./extension.js",
+    "contributes": {
+      "commands": [
+        {
+          "command": "extension-security-auditor.checkExtensions",
+          "title": "Extension Security Auditor: Check Installed Extensions"
+        }
+      ]
+    },
+    "scripts": {
+      "vscode:prepublish": "npm run compile",
+      "compile": "tsc -p ./",
+      "watch": "tsc -watch -p ./"
+    },
+    "devDependencies": {
+      "@types/vscode": "^1.80.0",
+      "typescript": "^5.0.0"
+    }
+  }
