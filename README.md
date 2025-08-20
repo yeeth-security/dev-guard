@@ -21,10 +21,3 @@ Protects developers from malicious Cursor extensions
 
 ## Security
 This extension maintains a local list of known malicious extension IDs in `malicious.json`. The list is regularly updated to include extensions that have been identified as security risks.
-
-# TODO
-- [ ] Make sure it refreshes itself each time an extension is uninstalled
-- [ ] Get IDs to populate malicious Cursor plugins JSON file
-- [ ] Make plugin just run after each change in the plugins directory
-- [ ] Add automatic updates for the malicious extensions database
-- [ ] Implement real-time scanning during extension installation
