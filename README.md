@@ -21,3 +21,6 @@ Protects developers from malicious Cursor extensions
 
 ## Security
 This extension maintains a local list of known malicious extension IDs in `malicious.json`. The list is regularly updated to include extensions that have been identified as security risks.
+
+## Contribute
+To add new detections to [malicious.json](/malicious.json) please make a PR at https://github.com/janbro/openvsx-registry-guard
