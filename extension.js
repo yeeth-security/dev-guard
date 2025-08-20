@@ -22,7 +22,6 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
-const https = require('https');
 
 /**
  * This function is called when your extension is activated.

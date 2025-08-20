@@ -23,11 +23,6 @@
         }
       ]
     },
-    "scripts": {
-      "vscode:prepublish": "npm run compile",
-      "compile": "tsc -p ./",
-      "watch": "tsc -watch -p ./"
-    },
     "devDependencies": {
       "@types/vscode": "^1.80.0",
       "typescript": "^5.0.0"
