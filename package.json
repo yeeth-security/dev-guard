@@ -1,10 +1,11 @@
 {
-    "name": "extension-security-auditor",
-    "displayName": "Extension Security Auditor for Cursor",
+    "name": "dev-guard",
+    "displayName": "dev-guard",
     "description": "A simple security auditor for Cursor extensions that checks for known malicious extensions.",
+    "repository": "https://github.com/bkojusner/dev-guard",
     "version": "0.0.1",
-    "publisher": "your-publisher-name",
-    "author": "your-name",
+    "publisher": "yeeth",
+    "author": "v0ldemort5545-unsafe_call",
     "engines": {
       "vscode": "^1.80.0"
     },
