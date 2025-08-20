@@ -1,4 +1,22 @@
-// This is the main file for the Cursor extension.
+/**
+ * Extension Security Auditor for Cursor
+ * 
+ * @fileoverview A security extension that scans and monitors installed extensions
+ *              for known malicious patterns and provides real-time security alerts.
+ * 
+ * @author v0ldemort5545, unsafe_call
+ * @version 0.0.1
+ * @since 2025-08-19
+ * 
+ * @description This extension provides comprehensive security auditing for Cursor extensions:
+ *             - Automatically scans all installed extensions on startup
+ *             - Monitors for extension changes and re-runs security audits on extension changes
+ *             - Provides uninstall options for malicious extensions
+ * 
+ * @usage The extension activates automatically on startup and can be manually triggered
+ *        via the command palette: "Extension Security Auditor: Check Installed Extensions"
+ * 
+ */
 
 // The module 'vscode' contains the Cursor extensibility API (Cursor is built on VS Code)
 const vscode = require('vscode');
@@ -62,6 +80,8 @@ function checkAndReportMaliciousExtensions(context) {
     }
 
     const foundMaliciousExtensions = [];
+    let processedCount = 0; // Track how many extensions have been processed (uninstalled or dismissed)
+    let uninstalledCount = 0; // Track how many extensions have been uninstalled
 
     // Loop through all installed extensions.
     for (const extension of allExtensions) {
@@ -92,10 +112,30 @@ function checkAndReportMaliciousExtensions(context) {
                 `Malicious extension found: '${extensionName}'`,
                 "Uninstall"
             ).then(selection => {
+                // Increment the processed counter regardless of user choice
+                processedCount++;
+                
                 if (selection === "Uninstall") {
                     // This command triggers the built-in Cursor uninstaller.
                     // It requires user confirmation.
                     vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
+                    uninstalledCount++;
+                }
+                
+                // Check if this was the last extension to be processed (uninstalled or dismissed)
+                if (processedCount === foundMaliciousExtensions.length && uninstalledCount > 0) {
+                    // Show restart prompt after all extensions have been processed
+                    setTimeout(() => {
+                        vscode.window.showInformationMessage(
+                            'Security audit completed. Cursor needs to restart to complete uninstallations.',
+                            'Restart Cursor'
+                        ).then(restartSelection => {
+                            if (restartSelection === 'Restart Cursor') {
+                                // Execute the restart command
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                    }, 1000); // Small delay to ensure all commands have been processed
                 }
             });
         });
