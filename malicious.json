@@ -5,5 +5,7 @@
     "sigasi.sigasi-visual-hdl",
     "donebd.vscode-keypromoter",
     "MarsCode.marscode-extension",
-    "Erick1.Erick1"
+    "Erick1.Erick1",
+    "solidityai/solidity",
+    "soliditysupport/solid"
 ]
