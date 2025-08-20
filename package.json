@@ -6,6 +6,7 @@
     "version": "0.0.1",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
+    "icon": "icons/icon128.png",
     "engines": {
       "vscode": "^1.80.0"
     },
