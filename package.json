@@ -1,7 +1,7 @@
 {
     "name": "extension-security-auditor",
-    "displayName": "Extension Security Auditor",
-    "description": "A simple security auditor for VS Code extensions.",
+    "displayName": "Extension Security Auditor for Cursor",
+    "description": "A simple security auditor for Cursor extensions that checks for known malicious extensions.",
     "version": "0.0.1",
     "publisher": "your-publisher-name",
     "author": "your-name",

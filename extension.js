@@ -1,6 +1,6 @@
-// This is the main file for the VS Code extension.
+// This is the main file for the Cursor extension.
 
-// The module 'vscode' contains the VS Code extensibility API
+// The module 'vscode' contains the Cursor extensibility API (Cursor is built on VS Code)
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
@@ -11,7 +11,7 @@ const fs = require('fs');
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-    console.log('Extension Security Auditor is now active!');
+    console.log('Extension Security Auditor is now active in Cursor!');
 
     // Initial check on startup
     checkAndReportMaliciousExtensions(context);
@@ -93,7 +93,7 @@ function checkAndReportMaliciousExtensions(context) {
                 "Uninstall"
             ).then(selection => {
                 if (selection === "Uninstall") {
-                    // This command triggers the built-in VS Code uninstaller.
+                    // This command triggers the built-in Cursor uninstaller.
                     // It requires user confirmation.
                     vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
                 }
@@ -105,7 +105,7 @@ function checkAndReportMaliciousExtensions(context) {
         outputChannel.appendLine("-------------------");
 
     } else {
-        vscode.window.showInformationMessage('No known malicious extensions found. Your environment is looking good!');
+        vscode.window.showInformationMessage('No known malicious extensions found. Your Cursor environment is looking good!');
     }
 }
 
