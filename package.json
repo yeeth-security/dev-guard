@@ -3,7 +3,7 @@
     "displayName": "dev-guard",
     "description": "A simple security auditor for Cursor extensions that checks for known malicious extensions.",
     "repository": "https://github.com/bkojusner/dev-guard",
-    "version": "0.0.1",
+    "version": "0.0.3",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
     "icon": "icons/icon128.png",
