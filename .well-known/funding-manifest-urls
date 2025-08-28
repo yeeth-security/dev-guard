@@ -1,5 +1,5 @@
 {
   "manifests": [
-    "https://yeeth.xyz/.well-known/funding.json"
+    "https://yeeth.xyz/funding.json"
   ]
 }
