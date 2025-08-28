@@ -23,13 +23,13 @@
 ### *Protecting Developers from Malicious Extensions*
 
 <p>
-  <a href="https://github.com/yeeth-security/dev-guard/stargazers"><img src="https://img.shields.io/github/stars/yourname/dev-guard?color=22d3ee&style=for-the-badge&logo=star&logoColor=white&labelColor=0f172a" /></a>
+  <a href="https://github.com/yeeth-security/dev-guard/stargazers"><img src="https://img.shields.io/github/stars/yeeth-security/dev-guard?color=22d3ee&style=for-the-badge&logo=star&logoColor=white&labelColor=0f172a" /></a>
   <img src="https://img.shields.io/badge/🖥️Cursor-Security-0ea5e9?style=for-the-badge&logo=visualstudiocode&logoColor=white&labelColor=0f172a">
   <img src="https://img.shields.io/badge/License-AGPL3.0-10b981?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a">
 </p>
 
 <p>
-  <a href="https://github.com/yourname/dev-guard/issues"><img src="https://img.shields.io/badge/🐛_Report_Issue-E11D48?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a"></a>
+  <a href="https://github.com/yeeth-security/dev-guard/issues"><img src="https://img.shields.io/badge/🐛_Report_Issue-E11D48?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a"></a>
 </p>
 
 </div>
