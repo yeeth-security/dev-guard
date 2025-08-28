@@ -82,7 +82,6 @@
 
 * Maintains a **local list** of known malicious extensions (`malicious.json`)
 * List is **community-driven** and updated regularly
-* No telemetry, no phoning home — **privacy-first security**
 
 ---
 
