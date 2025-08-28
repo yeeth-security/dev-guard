@@ -3,6 +3,10 @@
     "displayName": "dev-guard",
     "description": "A simple security auditor for Cursor extensions that checks for known malicious extensions.",
     "repository": "https://github.com/yeeth-security/dev-guard",
+    "bugs": {
+      "url": "https://github.com/yeeth-security/dev-guard/issues"
+    },
+    "homepage": "https://yeeth.xyz/",
     "version": "0.0.4",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
