@@ -18,6 +18,8 @@
 </tr>
 </table>
 
+[![pkgscan.dev](https://www.pkgscan.dev/api/badge/vscode-extension/yeeth/dev-guard%400.0.6?repository_url=https%3A%2F%2Fopen-vsx.org)](https://www.pkgscan.dev/pkg/vscode-extension/yeeth/dev-guard%400.0.6?repository_url=https%3A%2F%2Fopen-vsx.org)
+
 ---
 
 ### *Protecting Developers from Malicious Extensions*
