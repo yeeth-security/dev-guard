@@ -22,6 +22,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
+const { createTelemetry, bucketCount, bucketDuration } = require('./telemetry');
 
 /**
  * This function is called when your extension is activated.
@@ -31,8 +32,12 @@ const fs = require('fs');
 function activate(context) {
     console.log('Extension Security Auditor is now active in Cursor!');
 
+    const telemetry = createTelemetry(context);
+    telemetry.showNoticeOnce();
+    telemetry.record('activated');
+
     // Initial check on startup
-    checkAndReportMaliciousExtensions(context).catch(error => {
+    checkAndReportMaliciousExtensions(context, telemetry, 'startup').catch(error => {
         console.error('Error during initial security audit:', error);
         vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
     });
@@ -40,7 +45,7 @@ function activate(context) {
     // Subscribe to the onDidChange event
     context.subscriptions.push(vscode.extensions.onDidChange(() => {
         console.log('Extension list changed. Re-running security audit...');
-        checkAndReportMaliciousExtensions(context).catch(error => {
+        checkAndReportMaliciousExtensions(context, telemetry, 'change').catch(error => {
             console.error('Error during security audit after extension change:', error);
             vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
         });
@@ -48,13 +53,14 @@ function activate(context) {
 
     let disposable = vscode.commands.registerCommand('extension-security-auditor.checkExtensions', () => {
         vscode.window.showInformationMessage('Starting security audit of installed extensions...');
-        checkAndReportMaliciousExtensions(context).catch(error => {
+        checkAndReportMaliciousExtensions(context, telemetry, 'manual').catch(error => {
             console.error('Error during manual security audit:', error);
             vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
         });
     });
 
     context.subscriptions.push(disposable);
+    context.subscriptions.push({ dispose: () => { void telemetry.flush(); } });
 }
 
 /**
@@ -583,12 +589,29 @@ async function getMaliciousAdvisories(context) {
 }
 
 /**
+ * Maps internal source strings to short telemetry tokens.
+ * @param {string} source
+ * @returns {string}
+ */
+function classifySource(source) {
+    const value = String(source || '');
+    if (value.includes('pkgscan') && value.includes('GitHub')) return 'github+pkgscan';
+    if (value.includes('pkgscan')) return 'pkgscan';
+    if (value.includes('GitHub')) return 'github';
+    if (value.includes('bundled')) return 'bundled';
+    return 'none';
+}
+
+/**
  * Checks all installed extensions against the GitHub blocklist and pkgscan.dev
  * advisories, then alerts the user.
  * @param {vscode.ExtensionContext} context
+ * @param {{record: Function, flush: Function}} [telemetry]
+ * @param {'startup'|'change'|'manual'} [trigger]
  */
-async function checkAndReportMaliciousExtensions(context) {
+async function checkAndReportMaliciousExtensions(context, telemetry, trigger = 'startup') {
     const allExtensions = vscode.extensions.all;
+    const startedAt = Date.now();
 
     try {
         const { entries, source, stale } = await getMaliciousAdvisories(context);
@@ -597,6 +620,7 @@ async function checkAndReportMaliciousExtensions(context) {
         // If no advisory data is available, there's nothing to check against.
         if (advisoryIndex.size === 0) {
             console.warn('No malicious advisory data available; skipping audit.');
+            telemetry?.record('audit_error', { trigger, kind: 'no_advisory_data' });
             return;
         }
 
@@ -608,6 +632,30 @@ async function checkAndReportMaliciousExtensions(context) {
             if (advisory) {
                 foundMaliciousExtensions.push({ extension, advisory });
             }
+        }
+
+        let maxSeverity = null;
+        for (const { advisory } of foundMaliciousExtensions) {
+            if (severityRank(advisory.severity) > severityRank(maxSeverity)) {
+                maxSeverity = advisory.severity;
+            }
+        }
+
+        telemetry?.record('audit_completed', {
+            trigger,
+            duration: bucketDuration(Date.now() - startedAt),
+            installed: bucketCount(allExtensions.length),
+            findings: foundMaliciousExtensions.length,
+            source: classifySource(source),
+            stale: Boolean(stale)
+        });
+
+        if (foundMaliciousExtensions.length > 0) {
+            telemetry?.record('malicious_found', {
+                findings: foundMaliciousExtensions.length,
+                severity: maxSeverity || 'unknown',
+                source: classifySource(source)
+            });
         }
 
         // Report findings to the user.
@@ -663,8 +711,10 @@ async function checkAndReportMaliciousExtensions(context) {
                         // It requires user confirmation.
                         vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
                         uninstalledCount++;
+                        telemetry?.record('uninstall_clicked', { severity: advisory.severity || 'unknown' });
                     } else if (selection === "View Report" && advisory.permalink) {
                         vscode.env.openExternal(vscode.Uri.parse(advisory.permalink));
+                        telemetry?.record('report_viewed', { severity: advisory.severity || 'unknown' });
                     }
 
                     // Check if this was the last extension to be processed (uninstalled, viewed, or dismissed)
@@ -694,7 +744,10 @@ async function checkAndReportMaliciousExtensions(context) {
         }
     } catch (error) {
         console.error('Error during security audit:', error);
+        telemetry?.record('audit_error', { trigger, kind: 'audit_failed' });
         vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
+    } finally {
+        void telemetry?.flush();
     }
 }
 
