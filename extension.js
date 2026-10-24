@@ -1,5 +1,5 @@
 /**
- * Extension Security Auditor for Cursor
+ * Extension Security Auditor for VS Code-compatible IDEs
  * 
  * @fileoverview A security extension that scans and monitors installed extensions
  *              for known malicious patterns and provides real-time security alerts.
@@ -8,7 +8,9 @@
  * @version 0.0.1
  * @since 2025-08-19
  * 
- * @description This extension provides comprehensive security auditing for Cursor extensions:
+ * @description This extension provides comprehensive security auditing for extensions
+ *             running on the VS Code extension API (VS Code, Cursor, Windsurf, VSCodium,
+ *             and other AI IDEs):
  *             - Automatically scans all installed extensions on startup
  *             - Monitors for extension changes and re-runs security audits on extension changes
  *             - Provides uninstall options for malicious extensions
@@ -18,7 +20,8 @@
  * 
  */
 
-// The module 'vscode' contains the Cursor extensibility API (Cursor is built on VS Code)
+// The module 'vscode' contains the editor extensibility API shared by VS Code,
+// Cursor, Windsurf, and other VS Code-compatible AI IDEs
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
@@ -30,7 +33,7 @@ const { createTelemetry, bucketCount, bucketDuration } = require('./telemetry');
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-    console.log('Extension Security Auditor is now active in Cursor!');
+    console.log('Extension Security Auditor is now active!');
 
     const telemetry = createTelemetry(context);
     telemetry.showNoticeOnce();
@@ -52,11 +55,19 @@ function activate(context) {
     }));
 
     let disposable = vscode.commands.registerCommand('extension-security-auditor.checkExtensions', () => {
-        vscode.window.showInformationMessage('Starting security audit of installed extensions...');
-        checkAndReportMaliciousExtensions(context, telemetry, 'manual').catch(error => {
-            console.error('Error during manual security audit:', error);
-            vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
-        });
+        // Use a progress notification so the "audit in progress" feedback
+        // clears itself instead of leaving a stale notification behind.
+        void vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'dev-guard: checking installed extensions…',
+                cancellable: false
+            },
+            () => checkAndReportMaliciousExtensions(context, telemetry, 'manual').catch(error => {
+                console.error('Error during manual security audit:', error);
+                vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
+            })
+        );
     });
 
     context.subscriptions.push(disposable);
@@ -703,7 +714,7 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
                     processedCount++;
 
                     if (selection === "Uninstall") {
-                        // This command triggers the built-in Cursor uninstaller.
+                        // This command triggers the IDE's built-in extension uninstaller.
                         // It requires user confirmation.
                         vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
                         uninstalledCount++;
@@ -724,10 +735,10 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
                         // Show restart prompt after all extensions have been processed
                         setTimeout(() => {
                             vscode.window.showInformationMessage(
-                                'Security audit completed. Cursor needs to restart to complete uninstallations.',
-                                'Restart Cursor'
+                                'Security audit completed. Reload the window to finish uninstalling extensions.',
+                                'Reload Window'
                             ).then(restartSelection => {
-                                if (restartSelection === 'Restart Cursor') {
+                                if (restartSelection === 'Reload Window') {
                                     // Execute the restart command
                                     vscode.commands.executeCommand('workbench.action.reloadWindow');
                                 }
@@ -742,7 +753,7 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
             outputChannel.appendLine("-------------------");
 
         } else {
-            vscode.window.showInformationMessage('No known malicious extensions found. Your Cursor environment is looking good!');
+            vscode.window.showInformationMessage('No known malicious extensions found. Your IDE environment is looking good!');
         }
     } catch (error) {
         console.error('Error during security audit:', error);
