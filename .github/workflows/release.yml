@@ -1,14 +1,21 @@
 name: release
 
 # Cuts a GitHub Release for the version in package.json.
-# Workflow:
-#   1. Bump "version" in package.json and merge to main.
-#   2. Run this workflow from the Actions tab (or `gh workflow run release.yml`).
-#   3. It validates the JS, packages the VSIX, tags v<version>, publishes the
-#      release with generated notes + SHA256 checksum, then dispatches the
-#      Open VSX publish workflow (release events created by GITHUB_TOKEN do not
-#      trigger other workflows, so the dispatch is explicit).
+#
+# Runs automatically on every push to main. If the version in package.json is
+# already tagged/released the run is a no-op, so the flow is:
+#   1. Bump "version" in package.json.
+#   2. Merge to main.
+#   3. This workflow validates the JS, packages the VSIX, tags v<version>,
+#      publishes the release (notes + SHA256 checksum), then dispatches the
+#      Open VSX publish workflow.
+#
+# Releases created with GITHUB_TOKEN do not trigger other workflows, which is
+# why the publish workflow is dispatched explicitly. Manual dispatch is still
+# available for re-releasing a specific version.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       prerelease:
@@ -50,9 +57,31 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing $VERSION"
+          echo "Resolved version $VERSION"
+
+      - name: Decide whether this version still needs a release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Manual runs always proceed; the next step fails loudly if the
+          # version was already released.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG already released; nothing to do. Bump package.json to release a new version."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Refuse to overwrite an existing tag or release
+        if: steps.check.outputs.release == 'true' && github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,9 +96,11 @@ jobs:
           fi
 
       - name: Validate extension sources
+        if: steps.check.outputs.release == 'true'
         run: node --check extension.js && node --check telemetry.js
 
       - name: Package VSIX and checksum
+        if: steps.check.outputs.release == 'true'
         id: package
         run: |
           VSIX="dev-guard-${{ steps.version.outputs.version }}.vsix"
@@ -80,6 +111,7 @@ jobs:
           cat "$VSIX.sha256"
 
       - name: Create GitHub release
+        if: steps.check.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -93,7 +125,7 @@ jobs:
             "${{ steps.package.outputs.sha256 }}"
 
       - name: Trigger Open VSX publish
-        if: ${{ inputs.publish }}
+        if: steps.check.outputs.release == 'true' && (github.event_name == 'push' || inputs.publish)
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run publish.yml --ref "${{ steps.version.outputs.tag }}"
