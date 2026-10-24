@@ -4,33 +4,43 @@
     "description": "A simple security auditor for Cursor extensions that checks for known malicious extensions.",
     "repository": "https://github.com/yeeth-security/dev-guard",
     "bugs": {
-      "url": "https://github.com/yeeth-security/dev-guard/issues"
+        "url": "https://github.com/yeeth-security/dev-guard/issues"
     },
     "homepage": "https://yeeth.xyz/",
-    "version": "0.0.4",
+    "version": "0.0.8",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
     "icon": "icons/icon128.png",
     "engines": {
-      "vscode": "^1.80.0"
+        "vscode": "^1.80.0"
     },
     "categories": [
-      "Other"
+        "Other"
     ],
     "activationEvents": [
         "onStartupFinished"
     ],
     "main": "./extension.js",
     "contributes": {
-      "commands": [
-        {
-          "command": "extension-security-auditor.checkExtensions",
-          "title": "Extension Security Auditor: Check Installed Extensions"
+        "commands": [
+            {
+                "command": "extension-security-auditor.checkExtensions",
+                "title": "Extension Security Auditor: Check Installed Extensions"
+            }
+        ],
+        "configuration": {
+            "title": "dev-guard",
+            "properties": {
+                "devGuard.telemetry.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Send anonymous usage statistics to pkgscan.dev. No extension IDs, publisher names, or file paths are collected. Respects VS Code's global telemetry setting."
+                }
+            }
         }
-      ]
     },
     "devDependencies": {
-      "@types/vscode": "^1.80.0",
-      "typescript": "^5.0.0"
+        "@types/vscode": "^1.80.0",
+        "typescript": "^5.0.0"
     }
-  }
+}

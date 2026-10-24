@@ -64,12 +64,12 @@
 </tr>
 <tr>
 <td align="center" width="33%" style="padding: 15px;">
-<h3>📊 Updated Signatures</h3>
-<p>Real-time security insights updated in the malicious plugins list.</p>
+<h3>📊 Live Advisories</h3>
+<p>Pulls the latest malicious-package advisories from pkgscan.dev.</p>
 </td>
 <td align="center" width="33%" style="padding: 15px;">
-<h3>🛰️ Blocklist Checks</h3>
-<p>Compares against a curated malicious list.</p>
+<h3>🛰️ Verdict Checks</h3>
+<p>Matches installed extensions and versions against multi-engine scan verdicts.</p>
 </td>
 <td align="center" width="33%" style="padding: 15px;">
 <h3>🧩 Cursor Native</h3>
@@ -82,8 +82,30 @@
 
 ## 🔐 Security
 
-* Maintains a **local list** of known malicious extensions (`malicious.json`)
-* List is **community-driven** and updated regularly
+* Starts from the community [GitHub blocklist](https://github.com/yeeth-security/dev-guard/blob/main/malicious.json) on every audit
+* Adds confirmed malicious VS Code / Open VSX extensions from the public [pkgscan.dev advisories API](https://www.pkgscan.dev/api/advisories?kind=malicious) on top
+* First sync fetches all advisory pages; later refreshes are **incremental** and stop at the previous sync cursor, so normally only one page is fetched
+* Matches by extension ID and, when the advisory names specific versions, by installed version
+* Caches the GitHub blocklist for 10 minutes and advisories for one hour; falls back to the previous cache and then to the bundled [`malicious.json`](/malicious.json) when a source is unreachable
+* A full pkgscan.dev re-sync runs once a day to pick up removed advisories
+
+---
+
+## Telemetry
+
+dev-guard sends anonymous usage stats to pkgscan.dev so we can see whether the extension is working in the field. It is **enabled by default** and can be turned off at any time:
+
+- Setting: `devGuard.telemetry.enabled`
+- Or disable VS Code/Cursor telemetry globally — dev-guard respects it
+
+What is sent:
+
+* Activation, audit duration (bucketed), installed-extension count (bucketed)
+* Findings count, maximum severity, and which source answered (`github`, `github+pkgscan`, `bundled`)
+* Buttons clicked (`Uninstall`, `View Report`) and error/fallback signals
+* Extension version, editor name/version, OS, and a random install ID
+
+What is **never** sent: extension IDs, publisher names, file paths, advisory text, or machine identifiers. Events are validated and forwarded to our GA4 property server-side; the GA4 API secret never ships in the extension.
 
 ---
 
@@ -92,7 +114,7 @@
 Spotted a shady extension? 🕵️‍♂️
 
 * Add it to [`malicious.json`](/malicious.json)
-* Submit a PR here: [openvsx-registry-guard](https://github.com/janbro/openvsx-registry-guard)
+* Submit a PR here: [dev-guard](https://github.com/yeeth-security/dev-guard)
 
 ---
 
