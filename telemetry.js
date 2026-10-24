@@ -3,8 +3,9 @@
  *
  * Enabled by default (opt-out), but every send is gated on both VS Code's
  * global telemetry setting and the `devGuard.telemetry.enabled` setting.
- * Only coarse counts, timing buckets, and source health are sent — never
- * extension IDs, publisher names, file paths, or machine identifiers.
+ * Coarse counts, timing buckets, and source health are sent, plus the ID and
+ * installed version of any extension that was blocked — never file paths or
+ * machine identifiers.
  */
 
 const vscode = require('vscode');
@@ -19,6 +20,15 @@ const MAX_QUEUE = 25;
 const MAX_STRING = 64;
 const MAX_PROPS = 12;
 const FLUSH_TIMEOUT_MS = 5000;
+
+/**
+ * Strict formats for string props that carry identifiers, so a bug elsewhere
+ * cannot smuggle free-form text (display names, paths) into a payload.
+ */
+const PROP_VALUE_VALIDATORS = {
+    extension_id: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
+    installed_version: /^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/
+};
 
 /**
  * Buckets a count so raw inventory sizes are not transmitted.
@@ -65,7 +75,10 @@ function sanitizeProps(props) {
         } else if (typeof value === 'number' && Number.isFinite(value)) {
             cleaned[key] = value;
         } else if (typeof value === 'string') {
-            cleaned[key] = value.slice(0, MAX_STRING);
+            const text = value.slice(0, MAX_STRING);
+            const validator = PROP_VALUE_VALIDATORS[key];
+            if (validator && !validator.test(text)) continue;
+            cleaned[key] = text;
         } else {
             continue;
         }
@@ -240,7 +253,7 @@ function createTelemetry(context) {
             };
 
             vscode.window.showInformationMessage(
-                'dev-guard sends anonymous usage stats to improve the extension. No extension IDs or file paths are collected.',
+                'dev-guard sends pseudonymous usage stats to improve the extension. When a malicious extension is found, its ID and version are reported. No file paths are collected.',
                 'Learn more',
                 'Disable telemetry'
             ).then(selection => {

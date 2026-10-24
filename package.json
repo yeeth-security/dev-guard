@@ -34,7 +34,7 @@
                 "devGuard.telemetry.enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Send anonymous usage statistics to pkgscan.dev. No extension IDs, publisher names, or file paths are collected. Respects VS Code's global telemetry setting."
+                    "description": "Send pseudonymous usage statistics to pkgscan.dev. When a malicious extension is found, its ID and installed version are included. No file paths are collected. Respects VS Code's global telemetry setting."
                 }
             }
         }

@@ -93,7 +93,7 @@
 
 ## Telemetry
 
-dev-guard sends anonymous usage stats to pkgscan.dev so we can see whether the extension is working in the field. It is **enabled by default** and can be turned off at any time:
+dev-guard sends pseudonymous usage stats to pkgscan.dev so we can see whether the extension is working in the field. It is **enabled by default** and can be turned off at any time:
 
 - Setting: `devGuard.telemetry.enabled`
 - Or disable VS Code/Cursor telemetry globally — dev-guard respects it
@@ -101,11 +101,12 @@ dev-guard sends anonymous usage stats to pkgscan.dev so we can see whether the e
 What is sent:
 
 * Activation, audit duration (bucketed), installed-extension count (bucketed)
-* Findings count, maximum severity, and which source answered (`github`, `github+pkgscan`, `bundled`)
-* Buttons clicked (`Uninstall`, `View Report`) and error/fallback signals
+* Findings count and which source answered (`github`, `github+pkgscan`, `bundled`)
+* **Which extensions were blocked** — one `malicious_found` event per detected extension with its ID, installed version, severity, and whether it came from the blocklist or a pkgscan.dev advisory
+* Buttons clicked (`Uninstall`, `View Report`, including the extension ID) and error/fallback signals
 * Extension version, editor name/version, OS, and a random install ID
 
-What is **never** sent: extension IDs, publisher names, file paths, advisory text, or machine identifiers. Events are validated and forwarded to our GA4 property server-side; the GA4 API secret never ships in the extension.
+What is **never** sent: file paths, extension display names, advisory text, or machine identifiers. Events are validated and forwarded to our GA4 property server-side; the GA4 API secret never ships in the extension.
 
 ---
 
