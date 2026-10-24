@@ -39,6 +39,9 @@
             }
         }
     },
+    "scripts": {
+        "sync-badge": "node scripts/sync-badge.js"
+    },
     "devDependencies": {
         "@types/vscode": "^1.80.0",
         "typescript": "^5.0.0"

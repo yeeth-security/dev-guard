@@ -1,0 +1,79 @@
+name: badge
+
+# Keeps the pkgscan.dev badge in README.md pointed at the version in package.json.
+#
+# pkgscan.dev serves a badge per version, so the URL has to change on every
+# release. This workflow bumps it automatically whenever package.json changes on
+# main. The badge itself only renders once the version has been uploaded/scanned
+# on pkgscan.dev, which stays a manual step.
+#
+# Main must accept pushes from github-actions[bot] (no protection rule that
+# blocks it); otherwise the commit step fails and the badge stays stale.
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - README.md
+      - scripts/sync-badge.js
+      - .github/workflows/badge.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to point the badge at (defaults to package.json)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: badge
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION:-$(node -p "require('./package.json').version")}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "Version '$VERSION' is not a semver version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version $VERSION"
+
+      - name: Update README.md badge
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/sync-badge.js --version "$VERSION"
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "README.md already points at v$VERSION"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          git add README.md
+          git commit -m "docs: point pkgscan.dev badge at v$VERSION [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
