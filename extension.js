@@ -634,13 +634,6 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
             }
         }
 
-        let maxSeverity = null;
-        for (const { advisory } of foundMaliciousExtensions) {
-            if (severityRank(advisory.severity) > severityRank(maxSeverity)) {
-                maxSeverity = advisory.severity;
-            }
-        }
-
         telemetry?.record('audit_completed', {
             trigger,
             duration: bucketDuration(Date.now() - startedAt),
@@ -650,11 +643,14 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
             stale: Boolean(stale)
         });
 
-        if (foundMaliciousExtensions.length > 0) {
+        // One event per blocked extension so we can see which malicious
+        // extensions are actually present in the field.
+        for (const { extension, advisory } of foundMaliciousExtensions) {
             telemetry?.record('malicious_found', {
-                findings: foundMaliciousExtensions.length,
-                severity: maxSeverity || 'unknown',
-                source: classifySource(source)
+                extension_id: extension.id,
+                severity: advisory.severity || 'unknown',
+                source: advisory.permalink ? 'pkgscan' : 'github',
+                installed_version: (extension.packageJSON && extension.packageJSON.version) || 'unknown'
             });
         }
 
@@ -711,10 +707,16 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
                         // It requires user confirmation.
                         vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
                         uninstalledCount++;
-                        telemetry?.record('uninstall_clicked', { severity: advisory.severity || 'unknown' });
+                        telemetry?.record('uninstall_clicked', {
+                            extension_id: extension.id,
+                            severity: advisory.severity || 'unknown'
+                        });
                     } else if (selection === "View Report" && advisory.permalink) {
                         vscode.env.openExternal(vscode.Uri.parse(advisory.permalink));
-                        telemetry?.record('report_viewed', { severity: advisory.severity || 'unknown' });
+                        telemetry?.record('report_viewed', {
+                            extension_id: extension.id,
+                            severity: advisory.severity || 'unknown'
+                        });
                     }
 
                     // Check if this was the last extension to be processed (uninstalled, viewed, or dismissed)
