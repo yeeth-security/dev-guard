@@ -82,7 +82,7 @@
 
 ## 🔐 Security
 
-* Starts from the community [GitHub blocklist](https://github.com/janbro/openvsx-registry-guard) on every audit
+* Starts from the community [GitHub blocklist](https://github.com/yeeth-security/dev-guard/blob/main/malicious.json) on every audit
 * Adds confirmed malicious VS Code / Open VSX extensions from the public [pkgscan.dev advisories API](https://www.pkgscan.dev/api/advisories?kind=malicious) on top
 * First sync fetches all advisory pages; later refreshes are **incremental** and stop at the previous sync cursor, so normally only one page is fetched
 * Matches by extension ID and, when the advisory names specific versions, by installed version
@@ -96,7 +96,7 @@
 Spotted a shady extension? 🕵️‍♂️
 
 * Add it to [`malicious.json`](/malicious.json)
-* Submit a PR here: [openvsx-registry-guard](https://github.com/janbro/openvsx-registry-guard)
+* Submit a PR here: [dev-guard](https://github.com/yeeth-security/dev-guard)
 
 ---
 

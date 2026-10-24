@@ -71,7 +71,7 @@ const PKGSCAN_FULL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 /**
  * Community-maintained blocklist used as the base for every audit.
  */
-const GITHUB_BLOCKLIST_URL = 'https://raw.githubusercontent.com/janbro/openvsx-registry-guard/refs/heads/main/malicious.json';
+const GITHUB_BLOCKLIST_URL = 'https://raw.githubusercontent.com/yeeth-security/dev-guard/refs/heads/main/malicious.json';
 const GITHUB_BLOCKLIST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes (matches prior behavior)
 
 /**
