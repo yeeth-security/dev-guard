@@ -26,7 +26,7 @@
 
 <p>
   <a href="https://github.com/yeeth-security/dev-guard/stargazers"><img src="https://img.shields.io/github/stars/yeeth-security/dev-guard?color=22d3ee&style=for-the-badge&logo=star&logoColor=white&labelColor=0f172a" /></a>
-  <img src="https://img.shields.io/badge/🖥️Cursor-Security-0ea5e9?style=for-the-badge&logo=visualstudiocode&logoColor=white&labelColor=0f172a">
+  <img src="https://img.shields.io/badge/🖥️IDE-Security-0ea5e9?style=for-the-badge&logo=visualstudiocode&logoColor=white&labelColor=0f172a">
   <img src="https://img.shields.io/badge/License-AGPL3.0-10b981?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a">
 </p>
 
@@ -72,8 +72,8 @@
 <p>Matches installed extensions and versions against multi-engine scan verdicts.</p>
 </td>
 <td align="center" width="33%" style="padding: 15px;">
-<h3>🧩 Cursor Native</h3>
-<p>Built to integrate seamlessly with Cursor’s extension system.</p>
+<h3>🧩 IDE Native</h3>
+<p>Built on the standard VS Code extension API, so it works across Cursor, Windsurf, VSCodium, and other AI IDEs.</p>
 </td>
 </tr>
 </table>
@@ -96,7 +96,7 @@
 dev-guard sends pseudonymous usage stats to pkgscan.dev so we can see whether the extension is working in the field. It is **enabled by default** and can be turned off at any time:
 
 - Setting: `devGuard.telemetry.enabled`
-- Or disable VS Code/Cursor telemetry globally — dev-guard respects it
+- Or disable your editor's telemetry globally (VS Code, Cursor, Windsurf, …) — dev-guard respects it
 
 What is sent:
 
