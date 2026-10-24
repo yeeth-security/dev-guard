@@ -1,0 +1,5 @@
+.github/**
+.well-known/**
+.gitignore
+*.vsix
+*.sha256
