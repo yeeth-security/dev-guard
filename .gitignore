@@ -1,0 +1,6 @@
+node_modules/
+*.vsix
+*.sha256
+.env
+.env.*
+.DS_Store
