@@ -1,0 +1,99 @@
+name: release
+
+# Cuts a GitHub Release for the version in package.json.
+# Workflow:
+#   1. Bump "version" in package.json and merge to main.
+#   2. Run this workflow from the Actions tab (or `gh workflow run release.yml`).
+#   3. It validates the JS, packages the VSIX, tags v<version>, publishes the
+#      release with generated notes + SHA256 checksum, then dispatches the
+#      Open VSX publish workflow (release events created by GITHUB_TOKEN do not
+#      trigger other workflows, so the dispatch is explicit).
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark the GitHub release as a pre-release
+        type: boolean
+        default: false
+      publish:
+        description: Trigger the Open VSX publish workflow after releasing
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "package.json version '$VERSION' is not a semver version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION"
+
+      - name: Refuse to overwrite an existing tag or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists; bump package.json first." >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; bump package.json first." >&2
+            exit 1
+          fi
+
+      - name: Validate extension sources
+        run: node --check extension.js && node --check telemetry.js
+
+      - name: Package VSIX and checksum
+        id: package
+        run: |
+          VSIX="dev-guard-${{ steps.version.outputs.version }}.vsix"
+          npx --yes @vscode/vsce@3 package --out "$VSIX"
+          sha256sum "$VSIX" > "$VSIX.sha256"
+          echo "vsix=$VSIX" >> "$GITHUB_OUTPUT"
+          echo "sha256=$VSIX.sha256" >> "$GITHUB_OUTPUT"
+          cat "$VSIX.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          args=(--title "$TAG" --generate-notes --target "$GITHUB_SHA")
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" "${args[@]}" \
+            "${{ steps.package.outputs.vsix }}" \
+            "${{ steps.package.outputs.sha256 }}"
+
+      - name: Trigger Open VSX publish
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish.yml --ref "${{ steps.version.outputs.tag }}"
