@@ -14,7 +14,7 @@ const { readAllowlist, addToAllowlist, removeFromAllowlist } = require('../allow
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 
 const VIEW_ID = 'devGuard.panel';
-const MODES = ['auto', 'prompt', 'warn'];
+const MODES = ['auto', 'manual', 'warn'];
 const PKGSCAN_URL = 'https://www.pkgscan.dev/';
 const MAX_URL_LENGTH = 300;
 

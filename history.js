@@ -139,7 +139,7 @@ function createHistoryStore(context, options = {}) {
             emit();
         },
 
-        /** Adds removed extensions (newest first). `action` is auto or prompt. */
+        /** Adds removed extensions (newest first). `action` is auto or manual. */
         recordRemoved(items, action, now = Date.now()) {
             const fresh = (Array.isArray(items) ? items : []).map(item => ({
                 at: now,

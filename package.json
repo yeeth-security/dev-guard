@@ -66,7 +66,7 @@
                     "type": "string",
                     "enum": [
                         "auto",
-                        "prompt",
+                        "manual",
                         "warn"
                     ],
                     "enumDescriptions": [

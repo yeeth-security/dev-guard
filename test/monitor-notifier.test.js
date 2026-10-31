@@ -5,8 +5,8 @@
  *   - 5-minute poll delay, jitter bounds, server minWaitMs, and exponential backoff
  *   - Notification ledger: no duplicate alerts, batching into one toast per cycle,
  *     re-notify when severity upgrades, and manual command override
- *   - All three `removalMode` branches (`auto`, `prompt`, `warn`), plus fallback
- *     from `auto` to `prompt` when `workbench.extensions.uninstallExtension` fails
+ *   - All three `removalMode` branches (`auto`, `manual`, `warn`), plus fallback
+ *     from `auto` to `manual` when `workbench.extensions.uninstallExtension` fails
  */
 
 const { test } = require('node:test');
@@ -148,7 +148,7 @@ test('ledger prevents duplicate alerts, batches multiple findings, and re-notifi
     assert.equal(manual.notified, 2);
 });
 
-test('removalMode auto uninstalls silently and falls back to prompt if uninstall throws', async () => {
+test('removalMode auto uninstalls silently and falls back to manual if uninstall throws', async () => {
     const context = createFakeContext();
     const uninstalled = [];
     const warnings = [];

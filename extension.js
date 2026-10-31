@@ -11,7 +11,7 @@
  *               editor was closed are never missed
  *             - Filters advisories by the active editor's marketplace registry
  *               (while checking sideloaded VSIX extensions against all registries)
- *             - Supports `auto` (default), `prompt`, and `warn` removal modes
+ *             - Supports `auto` (default), `manual`, and `warn` removal modes
  *               with a persistent notification ledger so users are never spammed
  */
 
@@ -57,7 +57,7 @@ const RECENT_SYNC_REUSE_MS = 4 * 60 * 1000; // Reuse cache on change events with
 function getRemovalMode() {
     try {
         const raw = vscode.workspace.getConfiguration('devGuard').get('removalMode', 'auto');
-        return raw === 'prompt' || raw === 'warn' ? raw : 'auto';
+        return raw === 'manual' || raw === 'warn' ? raw : 'auto';
     } catch (_error) {
         return 'auto';
     }

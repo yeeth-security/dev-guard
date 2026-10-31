@@ -119,7 +119,7 @@ test('isStillOnDisk tells a reinstall apart from a pending reload', () => {
 
 test('renderPane escapes untrusted text and shows all sections and controls', () => {
     const html = renderPane({
-        status: { registry: 'cursor-marketplace', registryMethod: 'product.json', detectedRegistry: 'cursor-marketplace', marketplaceMode: 'default', marketplaceUrl: '', removalMode: 'prompt', lastSyncAt: 1, failureCount: 0, pointer: null },
+        status: { registry: 'cursor-marketplace', registryMethod: 'product.json', detectedRegistry: 'cursor-marketplace', marketplaceMode: 'default', marketplaceUrl: '', removalMode: 'manual', lastSyncAt: 1, failureCount: 0, pointer: null },
         runs: [{ at: 1, trigger: 'manual', installed: 3, findings: 1, removed: 1, advisoryCount: 10, advisoryHash: 'a'.repeat(64), inventoryHash: 'b'.repeat(64), source: 'pkgscan.dev', stale: false }],
         removed: [{ at: 1, id: '<script>evil</script>', version: '1', severity: 'high', action: 'auto', title: 'x', permalink: 'https://pkgscan.dev/x' }],
         audit: [
@@ -140,7 +140,7 @@ test('renderPane escapes untrusted text and shows all sections and controls', ()
     for (const title of ['Setup', 'Scan log', 'Removed', 'Audit log', 'Inventory', 'Marketplace', 'Mode', 'Feed']) {
         assert.ok(html.includes(title), `missing section ${title}`);
     }
-    assert.match(html, /<option value="prompt" selected>Prompt</, 'mode dropdown selects the active mode');
+    assert.match(html, /<option value="manual" selected>Manual</, 'mode dropdown selects the active mode');
     assert.ok(!html.includes('<script>evil</script>'), 'extension id must be escaped');
     assert.ok(html.includes(esc('<script>evil</script>')));
     assert.ok(html.includes('data-allow='));

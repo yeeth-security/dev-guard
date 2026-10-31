@@ -1,5 +1,5 @@
 /**
- * Notification ledger, batching, and removal modes (`auto`, `prompt`, `warn`).
+ * Notification ledger, batching, and removal modes (`auto`, `manual`, `warn`).
  *
  * Why this file exists:
  *   With 5-minute background polling, showing a popup for every flagged
@@ -103,12 +103,12 @@ function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'auto') {
         return;
     }
     void vscodeApi.window.showInformationMessage(
-        'dev-guard automatically removes extensions flagged as malicious by pkgscan.dev. You can change `devGuard.removalMode` to "prompt" or "warn" in Settings.',
-        'Change to Prompt'
+        'dev-guard automatically removes extensions flagged as malicious by pkgscan.dev. You can change `devGuard.removalMode` to "manual" or "warn" in Settings.',
+        'Change to Manual'
     ).then(choice => {
-        if (choice === 'Change to Prompt' && vscodeApi.workspace) {
+        if (choice === 'Change to Manual' && vscodeApi.workspace) {
             const target = vscodeApi.ConfigurationTarget ? vscodeApi.ConfigurationTarget.Global : true;
-            void vscodeApi.workspace.getConfiguration('devGuard').update('removalMode', 'prompt', target);
+            void vscodeApi.workspace.getConfiguration('devGuard').update('removalMode', 'manual', target);
         }
     });
 }
@@ -152,7 +152,7 @@ async function uninstallFindings(vscodeApi, findings, telemetry, eventName) {
 }
 
 /**
- * Handles audit findings according to `removalMode` (`auto`, `prompt`, `warn`)
+ * Handles audit findings according to `removalMode` (`auto`, `manual`, `warn`)
  * with one batched notification per cycle and ledger de-duplication.
  *
  * `onRemoved(items, action)` is optional. The side pane uses it to log every
@@ -163,7 +163,7 @@ async function uninstallFindings(vscodeApi, findings, telemetry, eventName) {
  *     seen it before. A finding only reaches this function if the extension
  *     is really on disk (see allowlist.js), so a repeat means the user
  *     reinstalled it. We remove it again until they allowlist it.
- *   - The ledger still gates `prompt` and `warn` toasts, and the fallback
+ *   - The ledger still gates `manual` and `warn` toasts, and the fallback
  *     prompt when an auto-uninstall fails, so background polls never spam.
  */
 async function handleAuditFindings({ context, vscodeApi, findings, trigger, removalMode = 'auto', telemetry, now = Date.now(), onRemoved }) {
@@ -224,13 +224,13 @@ async function handleAuditFindings({ context, vscodeApi, findings, trigger, remo
             if (sel === 'Uninstall') {
                 const { removed } = await uninstallFindings(vscodeApi, promptList, telemetry, 'uninstall_clicked');
                 if (removed.length > 0) {
-                    reportRemoved(removed, 'prompt');
+                    reportRemoved(removed, 'manual');
                     vscodeApi.window.showInformationMessage(
                         'Security audit completed. Reload the window to finish uninstalling extensions.',
                         'Reload Window', GUIDE_BUTTON
                     ).then(r => {
                         if (r === 'Reload Window') vscodeApi.commands.executeCommand('workbench.action.reloadWindow');
-                        else if (r === GUIDE_BUTTON) openRemovalGuide(vscodeApi, telemetry, 'prompt_toast');
+                        else if (r === GUIDE_BUTTON) openRemovalGuide(vscodeApi, telemetry, 'manual_toast');
                     });
                 }
             } else if (sel === 'View Report' && firstReportUrl) {
