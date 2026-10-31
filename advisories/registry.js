@@ -17,7 +17,7 @@
  *      extension) records `metadata.source` (`"gallery"`, `"vsix"`, or
  *      `"resource"`).
  *   3. Gallery-installed extensions only match advisories from the editor's
- *      registry (plus registry-agnostic community blocklist entries).
+ *      registry (plus registry-agnostic advisories that carry no registry).
  *      Sideloaded VSIX or unknown-source extensions match all registries.
  */
 
@@ -199,8 +199,8 @@ function isRegistryAndPlatformMatch(advisoryEntry, extension, extProvenance, edi
         return false;
     }
 
-    // Community blocklist entries have no specific registry (`null` or `'*'`)
-    // and always apply.
+    // An advisory with no specific registry (`null` or `'*'`) applies to every
+    // marketplace.
     const advisoryRegistry = normalizeRegistrySlug(advisoryEntry.registry);
     if (!advisoryRegistry || advisoryRegistry === '*') {
         return true;
