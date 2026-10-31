@@ -3,4 +3,6 @@ node_modules/
 *.sha256
 .env
 .env.*
+scripts/funnel-*
+scripts/fixtures/
 .DS_Store

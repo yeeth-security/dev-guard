@@ -1,31 +1,67 @@
 /**
  * Extension Security Auditor for VS Code-compatible IDEs
- * 
- * @fileoverview A security extension that scans and monitors installed extensions
- *              for known malicious patterns and provides real-time security alerts.
- * 
- * @author v0ldemort5545, unsafe_call
- * @version 0.0.1
- * @since 2025-08-19
- * 
- * @description This extension provides comprehensive security auditing for extensions
- *             running on the VS Code extension API (VS Code, Cursor, Windsurf, VSCodium,
- *             and other AI IDEs):
- *             - Automatically scans all installed extensions on startup
- *             - Monitors for extension changes and re-runs security audits on extension changes
- *             - Provides uninstall options for malicious extensions
- * 
- * @usage The extension activates automatically on startup and can be manually triggered
- *        via the command palette: "Extension Security Auditor: Check Installed Extensions"
- * 
+ *
+ * @fileoverview Scans and monitors installed extensions against the pkgscan.dev
+ *               advisories feed and community blocklist.
+ *
+ * @description Runs on the VS Code extension API (VS Code, Cursor, Windsurf,
+ *             VSCodium, and other forks):
+ *             - Polls pkgscan.dev every 5 minutes (with jitter, ETag, and backoff)
+ *             - Keeps a persistent sync pointer so advisories posted while the
+ *               editor was closed are never missed
+ *             - Filters advisories by the active editor's marketplace registry
+ *               (while checking sideloaded VSIX extensions against all registries)
+ *             - Supports `auto` (default), `prompt`, and `warn` removal modes
+ *               with a persistent notification ledger so users are never spammed
  */
 
-// The module 'vscode' contains the editor extensibility API shared by VS Code,
-// Cursor, Windsurf, and other VS Code-compatible AI IDEs
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
 const { createTelemetry, bucketCount, bucketDuration } = require('./telemetry');
+const {
+    loadSyncState,
+    saveSyncState,
+    shouldForceFullSync,
+    recordSyncSuccess,
+    recordSyncFailure
+} = require('./advisories/state');
+const {
+    resolveEditorRegistry,
+    registryFromGalleryConfig,
+    loadExtensionProvenance,
+    isRegistryAndPlatformMatch
+} = require('./advisories/registry');
+const {
+    fetchPageWithMeta,
+    mergeAdvisories,
+    fetchPkgscanAdvisories
+} = require('./advisories/sync');
+const { createAdvisoryMonitor } = require('./monitor');
+const { createHistoryStore, hashExtensions, hashAdvisorySet, hashInventory } = require('./history');
+const { createPane } = require('./ui/pane');
+const { readAllowlist, filterLiveFindings } = require('./allowlist');
+const { createAuditLog, scanAfterInstall } = require('./audit');
+const {
+    severityRank,
+    showAutoModeDisclosureOnce,
+    notifyAuditError,
+    handleAuditFindings
+} = require('./notifier');
+
+// Community-maintained blocklist used as the base for every audit.
+const GITHUB_BLOCKLIST_URL = 'https://raw.githubusercontent.com/yeeth-security/dev-guard/refs/heads/main/malicious.json';
+const GITHUB_BLOCKLIST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const RECENT_SYNC_REUSE_MS = 4 * 60 * 1000; // Reuse cache on change events within 4 min of a poll
+
+function getRemovalMode() {
+    try {
+        const raw = vscode.workspace.getConfiguration('devGuard').get('removalMode', 'auto');
+        return raw === 'prompt' || raw === 'warn' ? raw : 'auto';
+    } catch (_error) {
+        return 'auto';
+    }
+}
 
 /**
  * This function is called when your extension is activated.
@@ -36,368 +72,143 @@ function activate(context) {
     console.log('Extension Security Auditor is now active!');
 
     const telemetry = createTelemetry(context);
+    const outputChannel = vscode.window.createOutputChannel('Extension Security Auditor');
     telemetry.showNoticeOnce();
+    showAutoModeDisclosureOnce(context, vscode, getRemovalMode());
     telemetry.record('activated');
 
-    // Initial check on startup
-    checkAndReportMaliciousExtensions(context, telemetry, 'startup').catch(error => {
-        console.error('Error during initial security audit:', error);
-        vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
+    // How many Scan log / Audit log entries to keep. Read on every use so a
+    // settings change applies without a reload.
+    const getHistoryLimit = () => vscode.workspace.getConfiguration('devGuard').get('historyLimit');
+
+    // Scan history + hashes + removed list. Feeds the side pane.
+    const history = createHistoryStore(context, { getLimit: getHistoryLimit });
+
+    // Audit log: allowlist changes, DevGuard removals, installs/uninstalls, setting changes.
+    // Diff installed extensions now (catches changes made while the editor was
+    // closed) and again whenever the extension list changes.
+    const audit = createAuditLog(context, { getLimit: getHistoryLimit });
+    audit.syncInstalled(vscode.extensions.all);
+
+    // Background monitor: jittered startup check + 5-minute poll loop + focus/change listeners.
+    const monitor = createAdvisoryMonitor({
+        vscodeApi: vscode,
+        runAudit: trigger => checkAndReportMaliciousExtensions(context, telemetry, outputChannel, trigger, history, audit)
+    });
+    monitor.start();
+
+    // When an extension is installed or updated, scan right away (no debounce)
+    // and write the outcome for that extension into the audit log.
+    const auditWatcher = vscode.extensions.onDidChange(() => {
+        const events = audit.syncInstalled(vscode.extensions.all);
+        const added = events.filter(e => e.type === 'installed' || e.type === 'updated');
+        if (added.length > 0) void scanAfterInstall(monitor, audit, added);
     });
 
-    // Subscribe to the onDidChange event
-    context.subscriptions.push(vscode.extensions.onDidChange(() => {
-        console.log('Extension list changed. Re-running security audit...');
-        checkAndReportMaliciousExtensions(context, telemetry, 'change').catch(error => {
-            console.error('Error during security audit after extension change:', error);
-            vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
-        });
-    }));
+    // Side pane in the Activity Bar (shield icon). "DevGuard: Show Panel" focuses it.
+    const pane = createPane({
+        history,
+        audit,
+        telemetry,
+        getStatus: () => getPaneStatus(context),
+        runScan: () => {
+            telemetry.record('manual_scan_triggered', { from: 'panel' });
+            return monitor.executeCycle('manual');
+        }
+    });
 
-    let disposable = vscode.commands.registerCommand('extension-security-auditor.checkExtensions', () => {
-        // Use a progress notification so the "audit in progress" feedback
-        // clears itself instead of leaving a stale notification behind.
+    // One handler, two command IDs.
+    //   - `devGuard.checkExtensions` is the new "DevGuard: ..." command.
+    //   - `extension-security-auditor.checkExtensions` is the old ID. We keep it
+    //     so existing keybindings, tasks, and scripts keep working.
+    const runManualCheck = () => {
+        telemetry.record('manual_scan_triggered');
         void vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
                 title: 'dev-guard: checking installed extensions…',
                 cancellable: false
             },
-            () => checkAndReportMaliciousExtensions(context, telemetry, 'manual').catch(error => {
-                console.error('Error during manual security audit:', error);
-                vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
-            })
+            () => monitor.executeCycle('manual')
         );
-    });
+    };
+    const commandDisposables = [
+        'devGuard.checkExtensions',
+        'extension-security-auditor.checkExtensions'
+    ].map(commandId => vscode.commands.registerCommand(commandId, runManualCheck));
+    commandDisposables.push(
+        vscode.commands.registerCommand('devGuard.showPanel', () => pane.show())
+    );
 
-    context.subscriptions.push(disposable);
+    context.subscriptions.push(monitor, outputChannel, pane, auditWatcher, ...commandDisposables);
     context.subscriptions.push({ dispose: () => { void telemetry.flush(); } });
 }
 
 /**
- * Public advisories API from pkgscan.dev.
- * @see https://www.pkgscan.dev/api/advisories?kind=malicious
+ * Which marketplace to filter advisories by.
+ *
+ * `devGuard.marketplace` is either empty (default: detect the editor's gallery
+ * from product.json) or a custom gallery URL. A custom URL is mapped to a
+ * pkgscan registry by host. Unknown hosts give `registry: null`, which means
+ * "check against every marketplace" — safer than filtering on a slug pkgscan
+ * does not know, which would match nothing.
  */
-const PKGSCAN_ADVISORIES_URL = 'https://www.pkgscan.dev/api/advisories';
-const PKGSCAN_PAGE_SIZE = 100;
-const PKGSCAN_FETCH_TIMEOUT_MS = 15000;
-const PKGSCAN_MAX_ATTEMPTS = 4;
-const PKGSCAN_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const PKGSCAN_FULL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/**
- * Community-maintained blocklist used as the base for every audit.
- */
-const GITHUB_BLOCKLIST_URL = 'https://raw.githubusercontent.com/yeeth-security/dev-guard/refs/heads/main/malicious.json';
-const GITHUB_BLOCKLIST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes (matches prior behavior)
-
-/**
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * Parses an ISO timestamp to milliseconds for reliable comparison.
- * @param {string|null|undefined} value
- * @returns {number} Milliseconds, or NaN when unparseable
- */
-function timestampValue(value) {
-    if (typeof value !== 'string') {
-        return NaN;
-    }
-    const ms = Date.parse(value);
-    return Number.isFinite(ms) ? ms : NaN;
-}
-
-/**
- * Fetches a JSON document with a hard timeout and retries on rate limits.
- * @param {string} url
- * @param {number} [attempt]
- * @returns {Promise<any>}
- */
-async function fetchJson(url, attempt = 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PKGSCAN_FETCH_TIMEOUT_MS);
-
-    let response;
+function resolveRegistry() {
+    const detected = resolveEditorRegistry({
+        appRoot: vscode.env.appRoot,
+        appName: vscode.env.appName,
+        uriScheme: vscode.env.uriScheme
+    });
+    let raw = '';
     try {
-        response = await fetch(url, {
-            headers: { accept: 'application/json' },
-            signal: controller.signal
-        });
-    } finally {
-        clearTimeout(timer);
+        raw = String(vscode.workspace.getConfiguration('devGuard').get('marketplace', '') || '').trim();
+    } catch (_error) {
+        raw = '';
     }
-
-    if (response.status === 429 && attempt < PKGSCAN_MAX_ATTEMPTS) {
-        const retryAfter = Number(response.headers && response.headers.get('retry-after'));
-        const delay = Number.isFinite(retryAfter) && retryAfter > 0
-            ? retryAfter * 1000
-            : 1000 * Math.pow(2, attempt - 1);
-        console.warn(`Rate limited by pkgscan.dev; retrying in ${delay}ms (attempt ${attempt}/${PKGSCAN_MAX_ATTEMPTS})`);
-        await sleep(delay);
-        return fetchJson(url, attempt + 1);
-    }
-
-    if (response.status >= 500 && attempt < PKGSCAN_MAX_ATTEMPTS) {
-        const delay = 500 * attempt;
-        console.warn(`pkgscan.dev returned ${response.status}; retrying in ${delay}ms`);
-        await sleep(delay);
-        return fetchJson(url, attempt + 1);
-    }
-
-    if (!response.ok) {
-        throw new Error(`Request failed: ${response.status} ${response.statusText}`);
-    }
-
-    return await response.json();
-}
-
-/**
- * Normalizes one pkgscan advisory into the shape used by the auditor.
- * @param {any} item
- * @returns {{id: string|null, extensionId: string, version: string, severity: string|null, title: string|null, summary: string|null, permalink: string|null, updatedAt: string|null}|null}
- */
-function toAdvisoryEntry(item) {
-    if (!item || item.ecosystem !== 'vscode-extension') {
-        return null;
-    }
-
-    const publisher = typeof item.namespace === 'string' ? item.namespace.trim() : '';
-    const name = typeof item.name === 'string' ? item.name.trim() : '';
-    if (!publisher || !name) {
-        return null;
-    }
-
-    const permalink = typeof item.permalink === 'string' && item.permalink.startsWith('/')
-        ? `https://www.pkgscan.dev${item.permalink}`
-        : null;
-
+    // "custom" is stored when the user picked Custom in the pane but has not typed a URL yet.
+    const custom = raw !== '' && raw !== 'auto';
+    const hasUrl = custom && /^https?:\/\//i.test(raw);
     return {
-        id: typeof item.id === 'string' ? item.id : null,
-        extensionId: `${publisher}.${name}`,
-        version: typeof item.version === 'string' && item.version ? item.version : '*',
-        severity: item.severity || null,
-        title: item.title || null,
-        summary: item.summary || null,
-        permalink,
-        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null
+        registry: hasUrl ? registryFromGalleryConfig({ serviceUrl: raw }) : detected.registry,
+        method: hasUrl ? 'custom URL' : detected.method,
+        detected: detected.registry,
+        marketplaceMode: custom ? 'custom' : 'default',
+        marketplaceUrl: hasUrl ? raw : ''
     };
 }
 
 /**
- * Fetches every malicious advisory from pkgscan.dev.
- * The API caps `limit` at 100 and paginates with `offset`.
- * @returns {Promise<Array>} Advisory entries
+ * Snapshot of current state for the side pane's Status section.
+ * Reads only cached values, so it is safe to call on every render.
  */
-async function fetchPkgscanAdvisories({ cursor = null, full = true } = {}) {
-    const pageUrl = offset => `${PKGSCAN_ADVISORIES_URL}?kind=malicious&limit=${PKGSCAN_PAGE_SIZE}&offset=${offset}`;
-    const firstPage = await fetchJson(pageUrl(0));
-    const firstItems = Array.isArray(firstPage.items) ? firstPage.items : [];
-    const reportedTotal = Number(firstPage.total);
-    const total = Number.isFinite(reportedTotal) && reportedTotal > 0 ? reportedTotal : firstItems.length;
+/**
+ * Extension IDs DevGuard removed during THIS extension-host session.
+ * An uninstalled extension's code stays loaded until the window reloads, so
+ * these are "pending reload". Deliberately in memory, not globalState: a
+ * reload restarts the host, which empties the set — exactly when the threat
+ * is actually gone. (We cannot use `vscode.extensions.all` for this: VS Code
+ * drops an uninstalled extension from that list right away, even though it
+ * is still running.)
+ */
+const removedThisSession = new Set();
 
-    const entries = [];
-    let newest = null;
-    let reachedCursor = false;
-    let scannedPages = 0;
-
-    /**
-     * Adds a page's items until the incremental cursor is reached.
-     * Advisories are sorted newest-first by `updatedAt`.
-     * @returns {boolean} false when the cursor has been reached
-     */
-    const collect = items => {
-        for (const item of items) {
-            if (!newest && item && typeof item.updatedAt === 'string') {
-                newest = item.updatedAt;
-            }
-
-            // Incremental syncs stop as soon as they reach advisories that
-            // were already present in the previous sync.
-            if (!full && cursor && item && typeof item.updatedAt === 'string') {
-                const updatedAt = timestampValue(item.updatedAt);
-                const cursorAt = timestampValue(cursor);
-                if (Number.isFinite(updatedAt) && Number.isFinite(cursorAt) && updatedAt < cursorAt) {
-                    reachedCursor = true;
-                    return false;
-                }
-            }
-
-            const entry = toAdvisoryEntry(item);
-            if (entry) {
-                entries.push(entry);
-            }
-        }
-        return true;
+function getPaneStatus(context) {
+    const { registry, method, detected, marketplaceMode, marketplaceUrl } = resolveRegistry();
+    const state = loadSyncState(context);
+    return {
+        pendingReload: removedThisSession.size,
+        registry,
+        registryMethod: method,
+        detectedRegistry: detected,
+        marketplaceMode,
+        marketplaceUrl,
+        removalMode: getRemovalMode(),
+        lastSyncAt: state.lastSuccessAt || null,
+        failureCount: state.failureCount || 0,
+        pointer: state.pointer || null
     };
-
-    let done = !collect(firstItems);
-    scannedPages++;
-
-    // If a busy period added more than one page of advisories since the last
-    // sync, keep paginating until the cursor is reached. A normal refresh
-    // stops inside page 0.
-    let offset = firstItems.length;
-    while (!done && offset < total) {
-        await sleep(100);
-
-        let page;
-        try {
-            page = await fetchJson(pageUrl(offset));
-        } catch (error) {
-            console.warn(`Failed to fetch pkgscan advisories page at offset ${offset}:`, error);
-            return { entries, complete: false, newest, reachedCursor, scannedPages };
-        }
-
-        const items = Array.isArray(page.items) ? page.items : [];
-        if (items.length === 0) {
-            break;
-        }
-
-        done = !collect(items);
-        scannedPages++;
-        offset += items.length;
-    }
-
-    console.log(
-        `Fetched ${entries.length} malicious advisories from pkgscan.dev ` +
-        `(${full ? 'full' : 'incremental'} sync, ${scannedPages} page${scannedPages === 1 ? '' : 's'})`
-    );
-    return { entries, complete: true, newest, reachedCursor, scannedPages };
 }
 
-const SEVERITY_RANK = {
-    critical: 4,
-    high: 3,
-    medium: 2,
-    low: 1
-};
-
-/**
- * @param {string|null} severity
- * @returns {number}
- */
-function severityRank(severity) {
-    return SEVERITY_RANK[(severity || '').toLowerCase()] || 0;
-}
-
-/**
- * Builds a case-insensitive advisory index keyed by extension ID.
- * @param {Array} entries
- * @returns {Map<string, {versions: Set<string>, severity: string|null, title: string|null, summary: string|null, permalink: string|null}>}
- */
-function buildAdvisoryIndex(entries) {
-    const index = new Map();
-
-    for (const entry of entries) {
-        const key = entry.extensionId.toLowerCase();
-        let advisory = index.get(key);
-        if (!advisory) {
-            advisory = {
-                versions: new Set(),
-                severity: null,
-                title: null,
-                summary: null,
-                permalink: null
-            };
-            index.set(key, advisory);
-        }
-
-        advisory.versions.add(entry.version || '*');
-
-        if (severityRank(entry.severity) > severityRank(advisory.severity)) {
-            advisory.severity = entry.severity;
-        }
-        if (!advisory.title && entry.title) {
-            advisory.title = entry.title;
-        }
-        if (!advisory.summary && entry.summary) {
-            advisory.summary = entry.summary;
-        }
-        if (!advisory.permalink && entry.permalink) {
-            advisory.permalink = entry.permalink;
-        }
-    }
-
-    return index;
-}
-
-/**
- * Returns the advisory that applies to an installed extension, if any.
- * Advisories with version "*" apply to every version; specific versions
- * must match the installed version.
- * @param {Map} index
- * @param {vscode.Extension<any>} extension
- */
-function advisoryForExtension(index, extension) {
-    const advisory = index.get(extension.id.toLowerCase());
-    if (!advisory) {
-        return null;
-    }
-    if (advisory.versions.has('*')) {
-        return advisory;
-    }
-
-    const installedVersion = extension.packageJSON && extension.packageJSON.version;
-    if (!installedVersion) {
-        return advisory;
-    }
-    return advisory.versions.has(installedVersion) ? advisory : null;
-}
-
-/**
- * Loads the bundled malicious.json blocklist IDs as an offline fallback.
- * @param {vscode.ExtensionContext} context
- * @returns {string[]} Extension IDs
- */
-function loadBundledBlocklistIds(context) {
-    const maliciousFilePath = path.join(context.extensionPath, 'malicious.json');
-    if (!fs.existsSync(maliciousFilePath)) {
-        return [];
-    }
-
-    try {
-        const parsed = JSON.parse(fs.readFileSync(maliciousFilePath, 'utf8'));
-        if (!Array.isArray(parsed)) {
-            return [];
-        }
-        const ids = parsed.filter(id => typeof id === 'string' && id.includes('.'));
-        console.log(`Loaded ${ids.length} malicious extensions from bundled malicious.json`);
-        return ids;
-    } catch (error) {
-        console.warn('Could not read bundled malicious.json:', error);
-        return [];
-    }
-}
-
-/**
- * Converts blocklist IDs into advisory entries.
- * @param {string[]} ids
- * @param {string} title
- * @returns {Array} Advisory entries
- */
-function blocklistToEntries(ids, title) {
-    return ids.map(id => ({
-        id: `blocklist:${id.toLowerCase()}`,
-        extensionId: id,
-        version: '*',
-        severity: 'high',
-        title,
-        summary: null,
-        permalink: null,
-        updatedAt: null
-    }));
-}
-
-/**
- * @param {vscode.ExtensionContext} context
- * @param {string} fileName
- * @returns {string} Cache file path
- */
 function getStoragePath(context, fileName) {
     try {
         if (context.globalStorageUri && context.globalStorageUri.fsPath) {
@@ -410,31 +221,17 @@ function getStoragePath(context, fileName) {
     return path.join(context.extensionPath, `.${fileName}`);
 }
 
-/**
- * @param {string} cacheFilePath
- * @param {string} field Required array field on the cached object
- * @returns {any|null}
- */
 function readCache(cacheFilePath, field) {
     try {
-        if (!fs.existsSync(cacheFilePath)) {
-            return null;
-        }
+        if (!fs.existsSync(cacheFilePath)) return null;
         const parsed = JSON.parse(fs.readFileSync(cacheFilePath, 'utf8'));
-        if (!parsed || !Array.isArray(parsed[field])) {
-            return null;
-        }
-        return parsed;
+        return parsed && Array.isArray(parsed[field]) ? parsed : null;
     } catch (error) {
         console.warn(`Could not read cache ${cacheFilePath}:`, error);
         return null;
     }
 }
 
-/**
- * @param {string} cacheFilePath
- * @param {any} value
- */
 function writeCache(cacheFilePath, value) {
     try {
         fs.writeFileSync(cacheFilePath, JSON.stringify(value), 'utf8');
@@ -443,167 +240,130 @@ function writeCache(cacheFilePath, value) {
     }
 }
 
-/**
- * Fetches the community blocklist from GitHub.
- * @returns {Promise<string[]>} Extension IDs
- */
-async function fetchGithubBlocklist() {
-    const data = await fetchJson(GITHUB_BLOCKLIST_URL);
-    if (!Array.isArray(data)) {
-        throw new Error('Unexpected format: malicious.json is not an array');
+function loadBundledBlocklistIds(context) {
+    const maliciousFilePath = path.join(context.extensionPath, 'malicious.json');
+    if (!fs.existsSync(maliciousFilePath)) return [];
+    try {
+        const parsed = JSON.parse(fs.readFileSync(maliciousFilePath, 'utf8'));
+        return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string' && id.includes('.')) : [];
+    } catch (_error) {
+        return [];
     }
-    return data.filter(id => typeof id === 'string' && id.includes('.'));
 }
 
-/**
- * Loads the GitHub blocklist, caching it locally and falling back to the
- * bundled malicious.json when GitHub is unreachable.
- * @param {vscode.ExtensionContext} context
- * @returns {Promise<{ids: string[], source: string, stale: boolean}>}
- */
+function blocklistToEntries(ids, title) {
+    return ids.map(id => ({
+        id: `blocklist:${id.toLowerCase()}`,
+        extensionId: id,
+        version: '*',
+        registry: null,
+        platform: 'universal',
+        severity: 'high',
+        title,
+        summary: null,
+        permalink: null,
+        updatedAt: null
+    }));
+}
+
 async function getGithubBlocklist(context) {
     const cacheFilePath = getStoragePath(context, 'github-blocklist-cache.json');
     const cache = readCache(cacheFilePath, 'ids');
     const now = Date.now();
-
     if (cache && (now - cache.timestamp) < GITHUB_BLOCKLIST_CACHE_TTL_MS) {
         return { ids: cache.ids, source: 'GitHub blocklist cache', stale: false };
     }
-
     try {
-        console.log('Fetching malicious extensions blocklist from GitHub...');
-        const ids = await fetchGithubBlocklist();
-        if (ids.length === 0) {
-            throw new Error('GitHub blocklist is empty');
-        }
+        const res = await fetchPageWithMeta(GITHUB_BLOCKLIST_URL);
+        const ids = Array.isArray(res.data) ? res.data.filter(id => typeof id === 'string' && id.includes('.')) : [];
+        if (ids.length === 0) throw new Error('GitHub blocklist is empty');
         writeCache(cacheFilePath, { timestamp: now, ids });
         return { ids, source: 'GitHub blocklist', stale: false };
     } catch (error) {
         console.warn('Failed to fetch GitHub blocklist:', error);
     }
-
-    if (cache && cache.ids.length > 0) {
-        return { ids: cache.ids, source: 'GitHub blocklist cache (stale)', stale: true };
-    }
-
+    if (cache && cache.ids.length > 0) return { ids: cache.ids, source: 'GitHub blocklist cache (stale)', stale: true };
     const bundled = loadBundledBlocklistIds(context);
-    if (bundled.length > 0) {
-        return { ids: bundled, source: 'bundled malicious.json', stale: true };
-    }
-
-    return { ids: [], source: 'none', stale: true };
+    return bundled.length > 0 ? { ids: bundled, source: 'bundled malicious.json', stale: true } : { ids: [], source: 'none', stale: true };
 }
 
 /**
- * Merges advisories by advisory ID so updated records replace older ones.
- * @param {Array} existing
- * @param {Array} fresh
- * @returns {Array}
+ * Syncs pkgscan.dev advisories using the persisted pointer in `advisories/state.js`.
  */
-function mergeAdvisories(existing, fresh) {
-    const map = new Map();
-    const keyOf = entry => entry.id || `${entry.extensionId.toLowerCase()}@${entry.version}`;
-    for (const entry of existing) {
-        map.set(keyOf(entry), entry);
-    }
-    for (const entry of fresh) {
-        map.set(keyOf(entry), entry);
-    }
-    return Array.from(map.values());
-}
-
-/**
- * Loads pkgscan.dev advisories. After the first full sync, only new or
- * updated advisories are fetched by stopping at the previous sync cursor.
- * @param {vscode.ExtensionContext} context
- * @returns {Promise<{entries: Array, source: string, stale: boolean}>}
- */
-async function getPkgscanAdvisories(context) {
+async function getPkgscanAdvisories(context, { trigger = 'poll', registry = null, telemetry } = {}) {
     const cacheFilePath = getStoragePath(context, 'pkgscan-advisories-cache.json');
     const cache = readCache(cacheFilePath, 'entries');
+    const state = loadSyncState(context);
     const now = Date.now();
+    const hasCached = Boolean(cache && cache.entries.length > 0);
 
-    if (cache && (now - cache.timestamp) < PKGSCAN_CACHE_TTL_MS) {
-        console.log(`Using cached pkgscan advisories (${cache.entries.length} entries)`);
-        return { entries: cache.entries, source: 'pkgscan.dev cache', stale: false };
+    // On rapid extension-change events, reuse a very fresh sync instead of re-polling.
+    if (trigger === 'change' && hasCached && state.lastSuccessAt && (now - state.lastSuccessAt) < RECENT_SYNC_REUSE_MS) {
+        return { entries: cache.entries, source: 'pkgscan.dev cache', stale: false, state };
     }
 
-    const cursor = cache && typeof cache.cursor === 'string' ? cache.cursor : null;
-    const lastFullSync = cache && typeof cache.lastFullSync === 'number' ? cache.lastFullSync : 0;
-    const full = !cursor || (now - lastFullSync) > PKGSCAN_FULL_SYNC_INTERVAL_MS;
+    const registryChanged = Boolean(cache && (cache.registry || null) !== (registry || null));
+    let full = shouldForceFullSync(state, now, hasCached) || registryChanged;
 
     try {
-        console.log(`Fetching pkgscan.dev advisories (${full ? 'full' : 'incremental'} sync)...`);
-        const result = await fetchPkgscanAdvisories({ cursor, full });
-        if (!result.complete) {
-            throw new Error('pkgscan.dev advisory fetch was incomplete');
+        let result = await fetchPkgscanAdvisories({ pointer: state.pointer, full, registry, etag: state.etag });
+        if (!full && result.exceededPageLimit) {
+            full = true;
+            result = await fetchPkgscanAdvisories({ pointer: null, full: true, registry, etag: null });
         }
-
-        const entries = full
-            ? result.entries
-            : mergeAdvisories(cache.entries, result.entries);
-
-        if (entries.length === 0) {
-            throw new Error('pkgscan.dev returned no advisories');
+        if (result.notModified && hasCached) {
+            const nextState = recordSyncSuccess(state, { items: [], full: false, etag: result.etag, minWaitMs: result.minWaitMs, now });
+            saveSyncState(context, nextState);
+            return { entries: cache.entries, source: 'pkgscan.dev (304)', stale: false, state: nextState };
         }
-
-        const newestValue = timestampValue(result.newest);
-        const cursorValue = timestampValue(cursor);
-        const nextCursor = result.newest && (!cursor || (Number.isFinite(newestValue) && Number.isFinite(cursorValue) && newestValue > cursorValue))
-            ? result.newest
-            : cursor;
-
-        writeCache(cacheFilePath, {
-            timestamp: now,
-            cursor: nextCursor || null,
-            lastFullSync: full ? now : lastFullSync,
-            entries
-        });
-
-        return { entries, source: 'pkgscan.dev', stale: false };
+        const entries = full ? result.entries : mergeAdvisories(cache ? cache.entries : [], result.entries);
+        const nextState = recordSyncSuccess(state, { items: result.rawItems, full, etag: result.etag, minWaitMs: result.minWaitMs, now });
+        writeCache(cacheFilePath, { timestamp: now, registry: registry || null, entries });
+        saveSyncState(context, nextState);
+        return { entries, source: 'pkgscan.dev', stale: false, state: nextState };
     } catch (error) {
         console.warn('Failed to fetch advisories from pkgscan.dev:', error);
+        const failedState = recordSyncFailure(state);
+        saveSyncState(context, failedState);
+        telemetry?.record('poll_error', { trigger, kind: 'pkgscan_fetch_failed' });
+        if (hasCached) return { entries: cache.entries, source: 'pkgscan.dev cache (stale)', stale: true, state: failedState };
+        return { entries: [], source: 'none', stale: true, state: failedState };
     }
-
-    if (cache && cache.entries.length > 0) {
-        console.warn('Using stale pkgscan advisories cache');
-        return { entries: cache.entries, source: 'pkgscan.dev cache (stale)', stale: true };
-    }
-
-    return { entries: [], source: 'none', stale: true };
 }
 
 /**
- * Combines the GitHub blocklist (base) with pkgscan.dev advisories (on top).
- * @param {vscode.ExtensionContext} context
- * @returns {Promise<{entries: Array, source: string, stale: boolean}>}
+ * Matches installed extensions against advisory entries by ID, version,
+ * marketplace registry, and target platform.
  */
-async function getMaliciousAdvisories(context) {
-    const [github, pkgscan] = await Promise.all([
-        getGithubBlocklist(context),
-        getPkgscanAdvisories(context)
-    ]);
+function findMatchingAdvisories(extensions, entries, provenanceMap, editorRegistry) {
+    const byId = new Map();
+    for (const entry of entries) {
+        if (!entry || !entry.extensionId) continue;
+        const key = entry.extensionId.toLowerCase();
+        if (!byId.has(key)) byId.set(key, []);
+        byId.get(key).push(entry);
+    }
 
-    // pkgscan entries come first so their richer metadata wins when an ID is
-    // present in both sources.
-    const entries = pkgscan.entries.concat(blocklistToEntries(
-        github.ids,
-        'Listed on the known malicious extensions blocklist'
-    ));
+    const matches = [];
+    for (const extension of extensions) {
+        if (!extension || !extension.id) continue;
+        const candidates = byId.get(extension.id.toLowerCase());
+        if (!candidates) continue;
 
-    const sources = [github.source, pkgscan.source].filter(source => source && source !== 'none');
-    return {
-        entries,
-        source: sources.length > 0 ? sources.join(' + ') : 'none',
-        stale: github.stale || pkgscan.stale
-    };
+        const installedVersion = extension.packageJSON && extension.packageJSON.version;
+        const extProv = provenanceMap.get(extension.id.toLowerCase());
+        const applicable = candidates.filter(entry => {
+            const versionOk = entry.version === '*' || !installedVersion || entry.version === installedVersion;
+            return versionOk && isRegistryAndPlatformMatch(entry, extension, extProv, editorRegistry);
+        });
+        if (applicable.length === 0) continue;
+
+        applicable.sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+        matches.push({ extension, advisory: applicable[0] });
+    }
+    return matches;
 }
 
-/**
- * Maps internal source strings to short telemetry tokens.
- * @param {string} source
- * @returns {string}
- */
 function classifySource(source) {
     const value = String(source || '');
     if (value.includes('pkgscan') && value.includes('GitHub')) return 'github+pkgscan';
@@ -614,49 +374,49 @@ function classifySource(source) {
 }
 
 /**
- * Checks all installed extensions against the GitHub blocklist and pkgscan.dev
- * advisories, then alerts the user.
- * @param {vscode.ExtensionContext} context
- * @param {{record: Function, flush: Function}} [telemetry]
- * @param {'startup'|'change'|'manual'} [trigger]
+ * Runs one audit cycle: resolves marketplace, syncs advisories, matches installed
+ * extensions, logs to the reused output channel, and invokes the notifier.
  */
-async function checkAndReportMaliciousExtensions(context, telemetry, trigger = 'startup') {
-    const allExtensions = vscode.extensions.all;
+async function checkAndReportMaliciousExtensions(context, telemetry, outputChannel, trigger = 'startup', history = null, audit = null) {
+    const allExtensions = vscode.extensions.all || [];
     const startedAt = Date.now();
+    const removalMode = getRemovalMode();
 
     try {
-        const { entries, source, stale } = await getMaliciousAdvisories(context);
-        const advisoryIndex = buildAdvisoryIndex(entries);
-
-        // If no advisory data is available, there's nothing to check against.
-        if (advisoryIndex.size === 0) {
-            console.warn('No malicious advisory data available; skipping audit.');
-            telemetry?.record('audit_error', { trigger, kind: 'no_advisory_data' });
-            return;
-        }
-
-        const foundMaliciousExtensions = [];
-
-        // Loop through all installed extensions and match advisories by ID and version.
-        for (const extension of allExtensions) {
-            const advisory = advisoryForExtension(advisoryIndex, extension);
-            if (advisory) {
-                foundMaliciousExtensions.push({ extension, advisory });
-            }
-        }
-
-        telemetry?.record('audit_completed', {
-            trigger,
-            duration: bucketDuration(Date.now() - startedAt),
-            installed: bucketCount(allExtensions.length),
-            findings: foundMaliciousExtensions.length,
-            source: classifySource(source),
-            stale: Boolean(stale)
+        const { registry: editorRegistry } = resolveRegistry();
+        const provenanceMap = loadExtensionProvenance(allExtensions);
+        const hasNonGallery = allExtensions.some(ext => {
+            if (!ext || (ext.packageJSON && ext.packageJSON.isBuiltin)) return false;
+            const prov = provenanceMap.get(String(ext.id || '').toLowerCase());
+            return !prov || prov.source !== 'gallery';
         });
+        const queryRegistry = editorRegistry && !hasNonGallery ? editorRegistry : null;
 
-        // One event per blocked extension so we can see which malicious
-        // extensions are actually present in the field.
-        for (const { extension, advisory } of foundMaliciousExtensions) {
+        const [github, pkgscan] = await Promise.all([
+            getGithubBlocklist(context),
+            getPkgscanAdvisories(context, { trigger, registry: queryRegistry, telemetry })
+        ]);
+        const entries = pkgscan.entries.concat(blocklistToEntries(github.ids, 'Listed on the known malicious extensions blocklist'));
+        const sources = [github.source, pkgscan.source].filter(s => s && s !== 'none');
+        const source = sources.length > 0 ? sources.join(' + ') : 'none';
+        const stale = github.stale || pkgscan.stale;
+
+        if (entries.length === 0) {
+            telemetry?.record('audit_error', { trigger, kind: 'no_advisory_data' });
+            return pkgscan.state;
+        }
+
+        // Drop allowlisted extensions and ones already uninstalled (waiting for
+        // reload). What is left is a real, live threat — including reinstalls,
+        // which auto mode removes again every time.
+        const matched = findMatchingAdvisories(allExtensions, entries, provenanceMap, editorRegistry);
+        const found = filterLiveFindings(matched, readAllowlist(vscode));
+        const skipped = matched.length - found.length;
+        const duration = bucketDuration(Date.now() - startedAt);
+        telemetry?.record('audit_completed', { trigger, duration, installed: bucketCount(allExtensions.length), findings: found.length, source: classifySource(source), stale: Boolean(stale) });
+        telemetry?.record('poll_completed', { trigger, duration, findings: found.length, mode: removalMode, stale: Boolean(stale) });
+
+        for (const { extension, advisory } of found) {
             telemetry?.record('malicious_found', {
                 extension_id: extension.id,
                 severity: advisory.severity || 'unknown',
@@ -665,112 +425,72 @@ async function checkAndReportMaliciousExtensions(context, telemetry, trigger = '
             });
         }
 
-        // Report findings to the user.
-        if (foundMaliciousExtensions.length > 0) {
-            // Create an output channel to show detailed information.
-            const outputChannel = vscode.window.createOutputChannel("Extension Security Auditor");
-            outputChannel.show(true);
-            outputChannel.appendLine("--- SECURITY AUDIT REPORT ---");
-            outputChannel.appendLine(`Scan completed on ${new Date().toLocaleString()}`);
-            outputChannel.appendLine(
-                `Advisory source: ${source} (${advisoryIndex.size} malicious package${advisoryIndex.size === 1 ? '' : 's'}${stale ? ', may be stale' : ''})`
-            );
-            outputChannel.appendLine("--- WARNING: Malicious Extensions Found ---");
-
-            let processedCount = 0; // Track how many extensions have been processed (uninstalled, viewed, or dismissed)
-            let uninstalledCount = 0; // Track how many extensions have been uninstalled
-
-            foundMaliciousExtensions.forEach(({ extension, advisory }) => {
-                const extensionName = extension.packageJSON.displayName || extension.id;
-                const installedVersion = extension.packageJSON && extension.packageJSON.version;
-
-                outputChannel.appendLine(`- Name: ${extensionName}`);
-                outputChannel.appendLine(`  ID: ${extension.id}${installedVersion ? `@${installedVersion}` : ''}`);
-                if (advisory.severity) {
-                    outputChannel.appendLine(`  Severity: ${advisory.severity}`);
-                }
-                if (advisory.title) {
-                    outputChannel.appendLine(`  Advisory: ${advisory.title}`);
-                }
-                if (advisory.summary) {
-                    outputChannel.appendLine(`  Details: ${advisory.summary}`);
-                }
-                if (advisory.permalink) {
-                    outputChannel.appendLine(`  Report: ${advisory.permalink}`);
-                }
-                const reason = advisory.permalink
-                    ? 'Flagged as malicious by pkgscan.dev. Uninstall unless you have verified this extension.'
-                    : 'Listed on the known malicious extensions blocklist. Uninstall unless you have verified this extension.';
-                outputChannel.appendLine(`  Reason: ${reason}`);
-                outputChannel.appendLine("-------------------");
-
-                // Show a warning message with uninstall and report actions.
-                const actions = advisory.permalink ? ["Uninstall", "View Report"] : ["Uninstall"];
-                vscode.window.showWarningMessage(
-                    `Malicious extension found: '${extensionName}'`,
-                    ...actions
-                ).then(selection => {
-                    // Increment the processed counter regardless of user choice
-                    processedCount++;
-
-                    if (selection === "Uninstall") {
-                        // This command triggers the IDE's built-in extension uninstaller.
-                        // It requires user confirmation.
-                        vscode.commands.executeCommand('workbench.extensions.uninstallExtension', extension.id);
-                        uninstalledCount++;
-                        telemetry?.record('uninstall_clicked', {
-                            extension_id: extension.id,
-                            severity: advisory.severity || 'unknown'
-                        });
-                    } else if (selection === "View Report" && advisory.permalink) {
-                        vscode.env.openExternal(vscode.Uri.parse(advisory.permalink));
-                        telemetry?.record('report_viewed', {
-                            extension_id: extension.id,
-                            severity: advisory.severity || 'unknown'
-                        });
-                    }
-
-                    // Check if this was the last extension to be processed (uninstalled, viewed, or dismissed)
-                    if (processedCount === foundMaliciousExtensions.length && uninstalledCount > 0) {
-                        // Show restart prompt after all extensions have been processed
-                        setTimeout(() => {
-                            vscode.window.showInformationMessage(
-                                'Security audit completed. Reload the window to finish uninstalling extensions.',
-                                'Reload Window'
-                            ).then(restartSelection => {
-                                if (restartSelection === 'Reload Window') {
-                                    // Execute the restart command
-                                    vscode.commands.executeCommand('workbench.action.reloadWindow');
-                                }
-                            });
-                        }, 1000); // Small delay to ensure all commands have been processed
-                    }
-                });
-            });
-
-            outputChannel.appendLine("--- IMPORTANT ---");
-            outputChannel.appendLine(`The detected extensions are flagged as malicious (source: ${source}). Please verify the extensions and consider uninstalling them immediately.`);
-            outputChannel.appendLine("-------------------");
-
-        } else {
-            vscode.window.showInformationMessage('No known malicious extensions found. Your IDE environment is looking good!');
+        if (found.length > 0 || trigger === 'manual') {
+            if (trigger === 'manual') outputChannel.show(true);
+            outputChannel.appendLine(`--- SECURITY AUDIT (${new Date().toLocaleString()}, registry: ${editorRegistry || 'unfiltered'}) ---`);
+            if (skipped > 0) outputChannel.appendLine(`(skipped ${skipped} allowlisted or already-uninstalled match(es))`);
+            for (const { extension, advisory } of found) {
+                const ver = (extension.packageJSON && extension.packageJSON.version) || 'unknown';
+                const takedown = advisory.windowState === 'REMOVED' && advisory.takenDownAt ? ` (removed from registry ${advisory.takenDownAt})` : '';
+                outputChannel.appendLine(`- ${extension.id}@${ver} [${advisory.severity || 'high'}]${takedown}: ${advisory.title || 'Malicious advisory'}`);
+            }
         }
+
+        const result = await handleAuditFindings({
+            context, vscodeApi: vscode, findings: found, trigger, removalMode, telemetry,
+            onRemoved: (items, action) => {
+                // Mark as pending reload first, so the pane refresh triggered by
+                // recordRemoved below already sees the amber state.
+                for (const item of items) removedThisSession.add(String(item.extension.id || '').toLowerCase());
+                history?.recordRemoved(items, action);
+                for (const item of items) {
+                    audit?.record({
+                        type: 'removed',
+                        id: item.extension.id,
+                        version: (item.extension.packageJSON && item.extension.packageJSON.version) || 'unknown',
+                        detail: action === 'auto' ? 'auto' : 'on request'
+                    });
+                }
+            }
+        });
+
+        // Record this run for the dashboard. Hashes let the user verify later
+        // exactly which extensions and which advisory set were compared.
+        if (history) {
+            const inventory = hashExtensions(allExtensions, provenanceMap);
+            history.recordRun({
+                at: startedAt,
+                trigger,
+                registry: editorRegistry,
+                installed: inventory.length,
+                findings: found.length,
+                removed: result.removed || 0,
+                advisoryCount: entries.length,
+                advisoryHash: hashAdvisorySet(entries),
+                inventoryHash: hashInventory(inventory),
+                source,
+                stale: Boolean(stale)
+            }, inventory);
+        }
+        // `flaggedIds` lets the post-install scan write "clear" or "flagged"
+        // into the audit log for the extension that was just installed.
+        // `startedAt` timestamps that entry before any removal this cycle made.
+        return { ...pkgscan.state, startedAt, flaggedIds: found.map(f => String(f.extension.id || '').toLowerCase()) };
     } catch (error) {
         console.error('Error during security audit:', error);
         telemetry?.record('audit_error', { trigger, kind: 'audit_failed' });
-        vscode.window.showErrorMessage('Error during security audit. Check the console for details.');
+        notifyAuditError(context, vscode, trigger);
+        return { failureCount: 1, minWaitMs: 0 };
     } finally {
         void telemetry?.flush();
     }
 }
 
-/**
- * This function is called when your extension is deactivated.
- */
 function deactivate() {}
 
-// Module exports
 module.exports = {
     activate,
-    deactivate
-}
+    deactivate,
+    findMatchingAdvisories,
+    classifySource
+};

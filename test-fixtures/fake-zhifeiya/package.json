@@ -1,0 +1,21 @@
+{
+    "name": "copilot-model-config-assistant",
+    "displayName": "FAKE test stub (DevGuard)",
+    "description": "HARMLESS test stub. Does nothing. Used only to test that DevGuard flags and removes an extension with this ID and version.",
+    "version": "0.1.2",
+    "publisher": "zhifeiya",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/yeeth-security/dev-guard.git"
+    },
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "main": "./extension.js",
+    "activationEvents": [],
+    "contributes": {}
+}
