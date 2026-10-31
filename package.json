@@ -7,7 +7,7 @@
         "url": "https://github.com/yeeth-security/dev-guard/issues"
     },
     "homepage": "https://yeeth.xyz/",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
     "icon": "icons/icon128.png",
@@ -75,7 +75,7 @@
                         "Show a warning notification only; never uninstall automatically."
                     ],
                     "default": "auto",
-                    "description": "How dev-guard responds when an installed extension matches a malicious advisory from pkgscan.dev or the community blocklist."
+                    "description": "How dev-guard responds when an installed extension matches a malicious advisory from the pkgscan.dev advisories feed."
                 },
                 "devGuard.marketplace": {
                     "type": "string",

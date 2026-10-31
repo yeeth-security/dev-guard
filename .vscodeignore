@@ -3,6 +3,7 @@
 .gitignore
 *.vsix
 *.sha256
+malicious.json
 scripts/**
 test/**
 test-fixtures/**

@@ -2,7 +2,7 @@
  * Extension Security Auditor for VS Code-compatible IDEs
  *
  * @fileoverview Scans and monitors installed extensions against the pkgscan.dev
- *               advisories feed and community blocklist.
+ *               advisories feed. The pkgscan feed is the only advisory source.
  *
  * @description Runs on the VS Code extension API (VS Code, Cursor, Windsurf,
  *             VSCodium, and other forks):
@@ -33,7 +33,6 @@ const {
     isRegistryAndPlatformMatch
 } = require('./advisories/registry');
 const {
-    fetchPageWithMeta,
     mergeAdvisories,
     fetchPkgscanAdvisories
 } = require('./advisories/sync');
@@ -49,9 +48,9 @@ const {
     handleAuditFindings
 } = require('./notifier');
 
-// Community-maintained blocklist used as the base for every audit.
-const GITHUB_BLOCKLIST_URL = 'https://raw.githubusercontent.com/yeeth-security/dev-guard/refs/heads/main/malicious.json';
-const GITHUB_BLOCKLIST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// The pkgscan.dev advisories feed is the only advisory source. See ENG-25.
+// The community blocklist file malicious.json stays at its public URL for
+// clients published before 0.1.1. This version does not read it.
 const RECENT_SYNC_REUSE_MS = 4 * 60 * 1000; // Reuse cache on change events within 4 min of a poll
 
 function getRemovalMode() {
@@ -240,53 +239,6 @@ function writeCache(cacheFilePath, value) {
     }
 }
 
-function loadBundledBlocklistIds(context) {
-    const maliciousFilePath = path.join(context.extensionPath, 'malicious.json');
-    if (!fs.existsSync(maliciousFilePath)) return [];
-    try {
-        const parsed = JSON.parse(fs.readFileSync(maliciousFilePath, 'utf8'));
-        return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string' && id.includes('.')) : [];
-    } catch (_error) {
-        return [];
-    }
-}
-
-function blocklistToEntries(ids, title) {
-    return ids.map(id => ({
-        id: `blocklist:${id.toLowerCase()}`,
-        extensionId: id,
-        version: '*',
-        registry: null,
-        platform: 'universal',
-        severity: 'high',
-        title,
-        summary: null,
-        permalink: null,
-        updatedAt: null
-    }));
-}
-
-async function getGithubBlocklist(context) {
-    const cacheFilePath = getStoragePath(context, 'github-blocklist-cache.json');
-    const cache = readCache(cacheFilePath, 'ids');
-    const now = Date.now();
-    if (cache && (now - cache.timestamp) < GITHUB_BLOCKLIST_CACHE_TTL_MS) {
-        return { ids: cache.ids, source: 'GitHub blocklist cache', stale: false };
-    }
-    try {
-        const res = await fetchPageWithMeta(GITHUB_BLOCKLIST_URL);
-        const ids = Array.isArray(res.data) ? res.data.filter(id => typeof id === 'string' && id.includes('.')) : [];
-        if (ids.length === 0) throw new Error('GitHub blocklist is empty');
-        writeCache(cacheFilePath, { timestamp: now, ids });
-        return { ids, source: 'GitHub blocklist', stale: false };
-    } catch (error) {
-        console.warn('Failed to fetch GitHub blocklist:', error);
-    }
-    if (cache && cache.ids.length > 0) return { ids: cache.ids, source: 'GitHub blocklist cache (stale)', stale: true };
-    const bundled = loadBundledBlocklistIds(context);
-    return bundled.length > 0 ? { ids: bundled, source: 'bundled malicious.json', stale: true } : { ids: [], source: 'none', stale: true };
-}
-
 /**
  * Syncs pkgscan.dev advisories using the persisted pointer in `advisories/state.js`.
  */
@@ -366,11 +318,7 @@ function findMatchingAdvisories(extensions, entries, provenanceMap, editorRegist
 
 function classifySource(source) {
     const value = String(source || '');
-    if (value.includes('pkgscan') && value.includes('GitHub')) return 'github+pkgscan';
-    if (value.includes('pkgscan')) return 'pkgscan';
-    if (value.includes('GitHub')) return 'github';
-    if (value.includes('bundled')) return 'bundled';
-    return 'none';
+    return value.includes('pkgscan') ? 'pkgscan' : 'none';
 }
 
 /**
@@ -392,14 +340,10 @@ async function checkAndReportMaliciousExtensions(context, telemetry, outputChann
         });
         const queryRegistry = editorRegistry && !hasNonGallery ? editorRegistry : null;
 
-        const [github, pkgscan] = await Promise.all([
-            getGithubBlocklist(context),
-            getPkgscanAdvisories(context, { trigger, registry: queryRegistry, telemetry })
-        ]);
-        const entries = pkgscan.entries.concat(blocklistToEntries(github.ids, 'Listed on the known malicious extensions blocklist'));
-        const sources = [github.source, pkgscan.source].filter(s => s && s !== 'none');
-        const source = sources.length > 0 ? sources.join(' + ') : 'none';
-        const stale = github.stale || pkgscan.stale;
+        const pkgscan = await getPkgscanAdvisories(context, { trigger, registry: queryRegistry, telemetry });
+        const entries = pkgscan.entries;
+        const source = pkgscan.source;
+        const stale = pkgscan.stale;
 
         if (entries.length === 0) {
             telemetry?.record('audit_error', { trigger, kind: 'no_advisory_data' });
@@ -420,7 +364,7 @@ async function checkAndReportMaliciousExtensions(context, telemetry, outputChann
             telemetry?.record('malicious_found', {
                 extension_id: extension.id,
                 severity: advisory.severity || 'unknown',
-                source: advisory.permalink ? 'pkgscan' : 'github',
+                source: 'pkgscan',
                 installed_version: (extension.packageJSON && extension.packageJSON.version) || 'unknown'
             });
         }
