@@ -3,3 +3,6 @@
 .gitignore
 *.vsix
 *.sha256
+scripts/**
+test/**
+test-fixtures/**

@@ -7,7 +7,7 @@
         "url": "https://github.com/yeeth-security/dev-guard/issues"
     },
     "homepage": "https://yeeth.xyz/",
-    "version": "0.0.9",
+    "version": "0.1.0",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
     "icon": "icons/icon128.png",
@@ -24,10 +24,36 @@
     "contributes": {
         "commands": [
             {
+                "command": "devGuard.checkExtensions",
+                "title": "Dev-Guard: Check Installed Extensions"
+            },
+            {
+                "command": "devGuard.showPanel",
+                "title": "Dev-Guard: Show Panel"
+            },
+            {
                 "command": "extension-security-auditor.checkExtensions",
                 "title": "Extension Security Auditor: Check Installed Extensions"
             }
         ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "devGuard",
+                    "title": "Dev-Guard",
+                    "icon": "icons/shield.svg"
+                }
+            ]
+        },
+        "views": {
+            "devGuard": [
+                {
+                    "type": "webview",
+                    "id": "devGuard.panel",
+                    "name": "Dev-Guard"
+                }
+            ]
+        },
         "configuration": {
             "title": "dev-guard",
             "properties": {
@@ -35,15 +61,51 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Send pseudonymous usage statistics to pkgscan.dev. When a malicious extension is found, its ID and installed version are included. No file paths are collected. Respects VS Code's global telemetry setting."
+                },
+                "devGuard.removalMode": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "manual",
+                        "warn"
+                    ],
+                    "enumDescriptions": [
+                        "Automatically uninstall extensions flagged as malicious and show a summary notification with a Reload Window action.",
+                        "Show one batched notification with an Uninstall button when malicious extensions are found.",
+                        "Show a warning notification only; never uninstall automatically."
+                    ],
+                    "default": "auto",
+                    "description": "How dev-guard responds when an installed extension matches a malicious advisory from pkgscan.dev or the community blocklist."
+                },
+                "devGuard.marketplace": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Marketplace gallery URL to match advisories against. Leave **empty** to detect it from the editor's `product.json` (default). Enter a custom URL such as `https://open-vsx.org/vscode/gallery` if your editor uses a different gallery. Known hosts map to VS Code Marketplace, Cursor Marketplace, or Open VSX; unknown hosts are checked against every marketplace. Sideloaded `.vsix` extensions are always checked against every marketplace."
+                },
+                "devGuard.allowlist": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Extension IDs (publisher.name) that dev-guard must never flag or uninstall, even if they match a malicious advisory. In auto mode a flagged extension is removed again every time it is reinstalled until its ID is listed here."
+                },
+                "devGuard.historyLimit": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 10,
+                    "maximum": 2000,
+                    "markdownDescription": "How many entries to keep in the DevGuard pane's **Scan log** and **Audit log**. Oldest entries are dropped first. Background scans run about every 5 minutes, so `200` is roughly a day of scan history. Applies immediately."
                 }
             }
         }
     },
-    "scripts": {
-        "sync-badge": "node scripts/sync-badge.js"
-    },
     "devDependencies": {
         "@types/vscode": "^1.80.0",
         "typescript": "^5.0.0"
+    },
+    "scripts": {
+        "test": "node --test test/*.test.js",
+        "sync-badge": "node scripts/sync-badge.js"
     }
 }
