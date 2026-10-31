@@ -25,11 +25,11 @@
         "commands": [
             {
                 "command": "devGuard.checkExtensions",
-                "title": "DevGuard: Check Installed Extensions"
+                "title": "Dev-Guard: Check Installed Extensions"
             },
             {
                 "command": "devGuard.showPanel",
-                "title": "DevGuard: Show Panel"
+                "title": "Dev-Guard: Show Panel"
             },
             {
                 "command": "extension-security-auditor.checkExtensions",
@@ -40,7 +40,7 @@
             "activitybar": [
                 {
                     "id": "devGuard",
-                    "title": "DevGuard",
+                    "title": "Dev-Guard",
                     "icon": "icons/shield.svg"
                 }
             ]
@@ -50,7 +50,7 @@
                 {
                     "type": "webview",
                     "id": "devGuard.panel",
-                    "name": "DevGuard"
+                    "name": "Dev-Guard"
                 }
             ]
         },

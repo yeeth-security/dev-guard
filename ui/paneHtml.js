@@ -29,7 +29,7 @@ const MODES = [['auto', 'Auto-remove', 'removes threats automatically'], ['promp
 
 function renderHeader() {
     return `<div class="header">
-      <span class="eyebrow eyebrow--brand">DevGuard</span>
+      <span class="eyebrow eyebrow--brand">Dev-Guard</span>
       <button type="button" id="pkgscan" class="secured" title="Advisories are provided by pkgscan.dev">${ICON_SHIELD}Secured by <b>pkgscan.dev</b></button>
     </div>`;
 }
@@ -130,7 +130,7 @@ function renderPane(data) {
     const p = renderParts(data);
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${data.nonce}'; script-src 'nonce-${data.nonce}';">
-<title>DevGuard</title><style nonce="${data.nonce}">${PANE_CSS}</style></head><body>
+<title>Dev-Guard</title><style nonce="${data.nonce}">${PANE_CSS}</style></head><body>
 ${renderHeader()}
 <div id="hero">${p.hero}</div>
 <div id="actions">${p.actions}</div>
