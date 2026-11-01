@@ -7,7 +7,7 @@
  *   2. Hero     — score ring + verdict banner
  *   3. Actions  — Run scan / Settings
  *   4. Setup    — marketplace (select), mode (segmented), feed status
- *   5. Scan log, Removed, Audit log, Inventory (see paneSections.js)
+ *   5. Harden, Scan log, Removed, Audit log, Inventory (see paneSections.js)
  *
  * Built narrow-first: the pane often opens at ~190px wide.
  * Security: every user-controlled string goes through `esc()`, and the page
@@ -17,7 +17,8 @@
 const { PANE_CSS } = require('./paneStyles');
 const { PANE_SCRIPT } = require('./paneScript');
 const { esc, fmtClock, fmtNum, registryLabel, registryShort, ringSvg, computeVerdict } = require('./paneFormat');
-const { section, renderRuns, renderRemoved, renderAudit, renderInventory } = require('./paneSections');
+const { section, renderRuns, renderRemoved, renderHarden, renderAudit, renderInventory } = require('./paneSections');
+const { openCount, allSatisfied } = require('../hardening');
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 
 // Small inline icons (pkgscan buttons carry a leading icon). Stroke uses currentColor.
@@ -105,14 +106,16 @@ function renderSetup(s, lastRun) {
  * Renders every dynamic fragment of the pane, keyed by the DOM id it belongs
  * in. Used for both the initial page and incremental updates, so the two can
  * never drift apart.
- * @param {{status: any, runs: any[], inventory: any, removed: any[], audit: any[], allowlist: string[], scanning?: boolean}} data
+ * @param {{status: any, runs: any[], inventory: any, removed: any[], audit: any[], allowlist: string[], hardening?: any[], scanning?: boolean}} data
  */
-function renderParts({ status, runs = [], inventory, removed = [], audit = [], allowlist = [], scanning = false }) {
+function renderParts({ status, runs = [], inventory, removed = [], audit = [], allowlist = [], hardening = [], scanning = false }) {
     const s = status || {};
     const invCount = inventory && Array.isArray(inventory.rows) ? inventory.rows.length : 0;
+    const hardenRows = Array.isArray(hardening) ? hardening : [];
     return {
         hero: renderHero(computeVerdict({ status: s, runs, scanning })),
         actions: renderActions(scanning),
+        harden: renderHarden(hardenRows), 'count-harden': fmtNum(openCount(hardenRows)),
         setup: renderSetup(s, runs[0]),
         runs: renderRuns(runs), 'count-runs': fmtNum(runs.length),
         removed: renderRemoved(removed), 'count-removed': fmtNum(removed.length),
@@ -128,12 +131,14 @@ function renderParts({ status, runs = [], inventory, removed = [], audit = [], a
  */
 function renderPane(data) {
     const p = renderParts(data);
+    const hardenRows = Array.isArray(data.hardening) ? data.hardening : [];
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${data.nonce}'; script-src 'nonce-${data.nonce}';">
 <title>Dev-Guard</title><style nonce="${data.nonce}">${PANE_CSS}</style></head><body>
 ${renderHeader()}
 <div id="hero">${p.hero}</div>
 <div id="actions">${p.actions}</div>
+${section('harden', 'Harden', p['count-harden'], p.harden, !allSatisfied(hardenRows))}
 ${section('setup', 'Setup', null, p.setup)}
 ${section('runs', 'Scan log', p['count-runs'], p.runs)}
 ${section('removed', 'Removed', p['count-removed'], p.removed)}

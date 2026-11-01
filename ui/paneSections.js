@@ -85,12 +85,44 @@ function renderRemoved(removed) {
       </div>`).join('');
 }
 
+/**
+ * "Harden" rows (ENG-27). One row per editor check: current value, plain
+ * explanation, and one Apply button while the value is unsafe. Rows never
+ * carry an "apply all" — each click changes exactly one user setting.
+ */
+function renderHarden(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (list.length === 0) return '<div class="harden" data-all-safe="0"><p class="empty">No hardening checks available.</p></div>';
+
+    const unsafe = list.filter(r => r.state === 'unsatisfied').length;
+    const allSafe = unsafe === 0 && list.every(r => r.state === 'satisfied');
+    const summary = allSafe
+        ? `<p class="empty">All ${list.length} checks are in the safe state.</p>`
+        : `<p class="empty">${unsafe} of ${list.length} checks need attention. Apply writes your user settings only.</p>`;
+
+    const body = allSafe ? '' : list.map(row => {
+        const tone = row.state === 'satisfied' ? 'ok' : row.state === 'unsatisfied' ? 'warn' : '';
+        const apply = row.state === 'unsatisfied'
+            ? `<div class="harden__actions"><button type="button" class="btn btn--sm" data-harden="${esc(row.id)}">Apply ${esc(row.recommendedLabel)}</button></div>`
+            : '';
+        const error = row.error ? `<div class="hint bad">${esc(row.error)}</div>` : '';
+        return `<div class="harden__row" title="${esc(row.tooltip || '')}">
+          <div class="harden__head"><span class="harden__title">${esc(row.label)}</span><span class="tag ${tone}">${esc(row.valueLabel)}</span></div>
+          <div class="hint">${esc(row.detail)}</div>
+          ${error}${apply}
+        </div>`;
+    }).join('');
+
+    return `<div class="harden" data-all-safe="${allSafe ? '1' : '0'}">${summary}${body}</div>`;
+}
+
 /** Human labels and tones for audit event types. */
 const AUDIT_LABELS = {
     allowed: ['Allowed', 'warn'], unallowed: ['Allow revoked', ''], removed: ['Removed', 'bad'], // "Removed" = by DevGuard; "Uninstalled" = by the user
     installed: ['Installed', 'ok'], uninstalled: ['Uninstalled', ''], updated: ['Updated', ''],
     mode: ['Mode changed', ''], marketplace: ['Marketplace changed', ''],
-    scanned: ['Scanned', 'ok'] // post-install scan; tone flips to red when the entry is flagged
+    scanned: ['Scanned', 'ok'], // post-install scan; tone flips to red when the entry is flagged
+    hardening: ['Hardened', 'ok']
 };
 
 /**
@@ -135,4 +167,4 @@ function renderInventory(inv) {
     return `<p class="empty">Captured ${fmtDateTime(inv.at)}. Each hash is the SHA-256 of that extension's <span class="mono">package.json</span>.</p>${rows}`;
 }
 
-module.exports = { section, timeline, renderRuns, renderRemoved, renderAudit, renderInventory, AUDIT_LABELS };
+module.exports = { section, timeline, renderRuns, renderRemoved, renderHarden, renderAudit, renderInventory, AUDIT_LABELS };

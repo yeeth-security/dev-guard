@@ -37,6 +37,7 @@ const PANE_SCRIPT = `
     else if (el.id === 'reload') post('reload'); // finish unloading removed extensions
     else if (el.id === 'pkgscan') post('pkgscan');
     else if (d.url) post('openUrl', { url: d.url });
+    else if (d.harden) post('harden', { check: d.harden });
     else if (d.allow) post('allow', { id: d.allow });
     else if (d.unallow) post('unallow', { id: d.unallow });
     else if (d.copy) { post('copy', { text: d.copy }); el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 1200); }
@@ -71,6 +72,15 @@ const PANE_SCRIPT = `
       if (id === 'setup' && typing) continue; // never yank the URL box while the user types in it
       const el = $(id);
       if (el && el.innerHTML !== html) el.innerHTML = html;
+    }
+    // Every hardening check passed: get out of the way and fold the section.
+    const harden = $('harden');
+    const marker = harden && harden.querySelector('[data-all-safe]');
+    const details = harden && harden.closest('details');
+    if (marker && details && marker.dataset.allSafe === '1' && details.open) {
+      details.open = false;
+      state.open.harden = false;
+      vscode.setState(state);
     }
   });
 

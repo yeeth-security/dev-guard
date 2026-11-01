@@ -92,6 +92,7 @@ const PANE_CSS = `
   .btn--warn { flex: 0 0 auto; height: 28px; padding: 0 12px; font-size: 12px; background: var(--amber); color: rgba(0,0,0,.87); box-shadow: none; }
   .btn--warn:hover { background: var(--amber-deep); color: rgba(0,0,0,.87); }
   .btn:disabled { opacity: .6; cursor: progress; }
+  .btn--sm { flex: 0 0 auto; height: 26px; padding: 0 11px; border-radius: 8px; font-size: 11.5px; }
   .spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(255,255,255,.45); border-right-color: #fff; animation: spin .8s linear infinite; }
 
   /* ── Setup: stacked label-over-control fields (pkgscan meta column) ── */
@@ -152,6 +153,13 @@ const PANE_CSS = `
   .link { background: none; border: 0; padding: 0; color: var(--green); font-weight: 600; font-size: 12.5px; cursor: pointer; }
   .link:hover { color: var(--green-deep); text-decoration: underline; }
   .link--sm { font-size: 11px; margin-left: 8px; }
+
+  /* ── Harden rows (ENG-27): one editor setting, one Apply ── */
+  .harden { display: flex; flex-direction: column; gap: 8px; }
+  .harden__row { padding: 9px 10px; border: 1px solid var(--hair); border-radius: 10px; background: var(--surface-2); }
+  .harden__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
+  .harden__title { font-weight: 600; font-size: 12.5px; }
+  .harden__actions { margin-top: 7px; }
 
   /* ── Audit log events ── */
   .evt { position: relative; padding: 2px 0 10px; }

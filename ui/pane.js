@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const vscode = require('vscode');
 const { renderPane, renderParts } = require('./paneHtml');
 const { readAllowlist, addToAllowlist, removeFromAllowlist } = require('../allowlist');
+const { CHECKS, readState, applyCheck, splitSettingKey, versionBucket } = require('../hardening');
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 
 const VIEW_ID = 'devGuard.panel';
@@ -38,6 +39,27 @@ function cleanMarketplaceValue(value) {
     }
 }
 
+/** `inspect()` for one setting key, split into section + name. Never throws. */
+function inspectSetting(key) {
+    const { section, name } = splitSettingKey(key);
+    try {
+        return vscode.workspace.getConfiguration(section).inspect(name);
+    } catch (_error) {
+        return undefined;
+    }
+}
+
+/**
+ * Writes one setting at user (Global) scope. ENG-27: never Workspace, never
+ * WorkspaceFolder — an extension that rewrites repo config commits the same
+ * trust violation as the attack it defends against.
+ */
+async function updateGlobalSetting(key, value) {
+    const target = vscode.ConfigurationTarget ? vscode.ConfigurationTarget.Global : true;
+    const { section, name } = splitSettingKey(key);
+    await vscode.workspace.getConfiguration(section).update(name, value, target);
+}
+
 /**
  * @param {{
  *   history: ReturnType<import('../history').createHistoryStore>,
@@ -51,12 +73,19 @@ function createPane({ history, audit, getStatus, runScan, telemetry }) {
     /** @type {vscode.WebviewView|null} */
     let view = null;
     let scanning = false;
+    // Last write error per hardening check, so the row can show why Apply failed.
+    const hardenErrors = {};
     // True once the page's script has loaded and said "ready". Before that we
     // must set the full HTML; after that we only send incremental updates so
     // scroll position, focus, and open/closed sections are never disturbed.
     let ready = false;
 
     function collectData() {
+        // Read live on every render: these rows depend on editor settings, not
+        // on DevGuard state. Errors stay attached so a failed Apply explains itself.
+        const hardening = readState(inspectSetting).map(row =>
+            hardenErrors[row.id] ? { ...row, error: hardenErrors[row.id] } : row
+        );
         return {
             status: getStatus(),
             runs: history.listRuns(),
@@ -64,6 +93,7 @@ function createPane({ history, audit, getStatus, runScan, telemetry }) {
             inventory: history.getLastInventory(),
             audit: audit.list(),
             allowlist: [...readAllowlist(vscode)].sort(),
+            hardening,
             scanning
         };
     }
@@ -103,6 +133,27 @@ function createPane({ history, audit, getStatus, runScan, telemetry }) {
             case 'settings':
                 void vscode.commands.executeCommand('workbench.action.openSettings', 'devGuard');
                 break;
+            case 'harden': {
+                // ENG-27: one setting, one click, user scope only. applyCheck
+                // refuses to write when the row is already safe.
+                const check = typeof message.check === 'string' ? message.check : '';
+                if (!CHECKS.some(item => item.id === check)) { refresh(); break; }
+                delete hardenErrors[check];
+                const result = await applyCheck(updateGlobalSetting, inspectSetting, check);
+                if (result.applied) {
+                    audit.record({ type: 'hardening', detail: result.row.key });
+                    // No values, no paths: setting key + coarse editor version only.
+                    telemetry?.record('hardening_applied', {
+                        setting: result.row.key,
+                        editor_version: versionBucket(vscode.version)
+                    });
+                    vscode.window.setStatusBarMessage(`DevGuard: ${result.row.label} set to ${result.row.recommendedLabel}`, 3000);
+                } else if (!result.ok && result.error) {
+                    hardenErrors[check] = result.error;
+                }
+                refresh();
+                break;
+            }
             case 'reload':
                 // From the hero's reload notice: unloads removed extensions from memory.
                 telemetry?.record('reload_clicked', { from: 'pane' });
@@ -195,7 +246,9 @@ function createPane({ history, audit, getStatus, runScan, telemetry }) {
     // Re-render on any data or settings change, so the pane is never stale.
     const unsubscribers = [history.onChange(refresh), audit.onChange(refresh)];
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('devGuard')) refresh();
+        // Refresh for DevGuard's own settings and for any hardening check, so a
+        // change made in the Settings UI is reflected in the rows immediately.
+        if (e.affectsConfiguration('devGuard') || CHECKS.some(check => e.affectsConfiguration(check.key))) refresh();
     });
 
     return {
@@ -210,4 +263,4 @@ function createPane({ history, audit, getStatus, runScan, telemetry }) {
     };
 }
 
-module.exports = { VIEW_ID, createPane, cleanMarketplaceValue };
+module.exports = { VIEW_ID, createPane, cleanMarketplaceValue, inspectSetting, updateGlobalSetting };
