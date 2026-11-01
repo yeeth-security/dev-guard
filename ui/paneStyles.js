@@ -158,7 +158,7 @@ const PANE_CSS = `
   .harden { display: flex; flex-direction: column; gap: 8px; }
   .harden__row { padding: 9px 10px; border: 1px solid var(--hair); border-radius: 10px; background: var(--surface-2); }
   .harden__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
-  .harden__title { font-weight: 600; font-size: 12.5px; }
+  .harden__title { flex: 0 0 auto; font-weight: 600; font-size: 12px; white-space: nowrap; }
   .harden__actions { margin-top: 7px; }
   /* Section status: one word + circled check, hover card links the guide. */
   #harden-state { margin-left: auto; display: inline-flex; }

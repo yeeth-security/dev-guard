@@ -76,13 +76,13 @@ const CHECKS = Object.freeze([
     {
         id: 'ignoreRecommendations',
         key: 'extensions.ignoreRecommendations',
-        label: 'Extension recommendations',
+        label: 'Recommendations',
         recommended: IGNORE_RECOMMENDATIONS,
         isSafe: value => value === true,
         format: value => (value === true ? 'Hidden' : 'Shown'),
         safeDetail: 'A repository cannot nudge you to install the extensions it lists.',
         unsafeDetail: '.vscode/extensions.json can nudge you to install the extensions it lists.',
-        tooltip: 'Recommended: hidden. Stops a repository from recommending its own extensions.'
+        tooltip: 'Extension recommendations. Recommended: hidden. Stops a repository from recommending its own extensions.'
     },
     {
         id: 'workspaceTrust',
