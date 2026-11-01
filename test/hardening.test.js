@@ -102,6 +102,10 @@ test('renderHarden shows one Apply for unsafe rows and none for safe or unavaila
     assert.doesNotMatch(html, /data-harden="autoUpdateDelay"/);
     assert.match(html, /Not available/);
     assert.match(html, /Apply Off/);
+    assert.match(html, /harden__status is-bad/); // unsafe -> X
+    assert.match(html, /harden__status is-warn/); // unsupported -> !
+    assert.match(html, /harden__status is-ok/); // safe -> check
+    assert.doesNotMatch(html, /class="tag/); // no value pill: glyphs only
 });
 
 test('renderParts always carries the Harden body and its summary state', () => {

@@ -93,6 +93,19 @@ function renderRemoved(removed) {
  */
 const HARDEN_GUIDE_URL = 'https://yeethsecurity.com/guides/vscode-extension-malware/';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4 10-10"/></svg>';
+const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>';
+const ICON_ALERT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v9"/><path d="M12 18.5h.01"/></svg>';
+const ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>';
+
+/**
+ * One status glyph per row: check when safe, X when not, exclamation when the
+ * editor has no such setting. The value itself lives in the info card.
+ */
+function hardenStatus(row) {
+    if (row.state === 'satisfied') return `<span class="harden__status is-ok" role="img" aria-label="Safe: ${esc(row.valueLabel)}">${ICON_CHECK}</span>`;
+    if (row.state === 'unavailable') return `<span class="harden__status is-warn" role="img" aria-label="Not available">${ICON_ALERT}</span>`;
+    return `<span class="harden__status is-bad" role="img" aria-label="Needs attention: ${esc(row.valueLabel)}">${ICON_X}</span>`;
+}
 
 /**
  * The section's status icon: one word title, a circled check on the right,
@@ -137,14 +150,20 @@ function renderHarden(rows) {
         : `<p class="empty">${unsafe} of ${list.length} checks need attention. Apply writes your user settings only.</p>`;
 
     const body = allSafe ? '' : list.map(row => {
-        const tone = row.state === 'satisfied' ? 'ok' : row.state === 'unsatisfied' ? 'warn' : '';
         const apply = row.state === 'unsatisfied'
             ? `<div class="harden__actions"><button type="button" class="btn btn--sm" data-harden="${esc(row.id)}">Apply ${esc(row.recommendedLabel)}</button></div>`
             : '';
         const error = row.error ? `<div class="hint bad">${esc(row.error)}</div>` : '';
-        return `<div class="harden__row" title="${esc(row.tooltip || '')}">
-          <div class="harden__head"><span class="harden__title">${esc(row.label)}</span><span class="tag ${tone}">${esc(row.valueLabel)}</span></div>
-          <div class="hint">${esc(row.detail)}</div>
+        const current = `${row.valueLabel}. ${row.detail}`;
+        const recommended = row.state === 'unavailable' ? '' : ` Recommended: ${row.recommendedLabel}.`;
+        return `<div class="harden__row">
+          <div class="harden__head">
+            <span class="harden__title">${esc(row.label)}</span>
+            ${hardenStatus(row)}
+            <span class="harden__info" tabindex="0" aria-label="More about ${esc(row.label)}">${ICON_INFO}
+              <span class="harden__tip" role="tooltip"><b>${esc(row.label)}</b> — ${esc(current)}${esc(recommended)}${row.tooltip ? ` ${esc(row.tooltip)}` : ''}</span>
+            </span>
+          </div>
           ${error}${apply}
         </div>`;
     }).join('');
