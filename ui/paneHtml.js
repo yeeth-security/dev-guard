@@ -17,8 +17,8 @@
 const { PANE_CSS } = require('./paneStyles');
 const { PANE_SCRIPT } = require('./paneScript');
 const { esc, fmtClock, fmtNum, registryLabel, registryShort, ringSvg, computeVerdict } = require('./paneFormat');
-const { section, renderRuns, renderRemoved, renderHarden, renderAudit, renderInventory } = require('./paneSections');
-const { openCount, allSatisfied } = require('../hardening');
+const { section, renderRuns, renderRemoved, renderHarden, renderHardenState, renderAudit, renderInventory } = require('./paneSections');
+const { allSatisfied } = require('../hardening');
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 
 // Small inline icons (pkgscan buttons carry a leading icon). Stroke uses currentColor.
@@ -115,7 +115,7 @@ function renderParts({ status, runs = [], inventory, removed = [], audit = [], a
     return {
         hero: renderHero(computeVerdict({ status: s, runs, scanning })),
         actions: renderActions(scanning),
-        harden: renderHarden(hardenRows), 'count-harden': fmtNum(openCount(hardenRows)),
+        harden: renderHarden(hardenRows), 'harden-state': renderHardenState(hardenRows),
         setup: renderSetup(s, runs[0]),
         runs: renderRuns(runs), 'count-runs': fmtNum(runs.length),
         removed: renderRemoved(removed), 'count-removed': fmtNum(removed.length),
@@ -138,7 +138,7 @@ function renderPane(data) {
 ${renderHeader()}
 <div id="hero">${p.hero}</div>
 <div id="actions">${p.actions}</div>
-${section('harden', 'Harden', p['count-harden'], p.harden, !allSatisfied(hardenRows))}
+${section('harden', 'Harden', null, p.harden, !allSatisfied(hardenRows), `<span id="harden-state">${p['harden-state']}</span>`)}
 ${section('setup', 'Setup', null, p.setup)}
 ${section('runs', 'Scan log', p['count-runs'], p.runs)}
 ${section('removed', 'Removed', p['count-removed'], p.removed)}

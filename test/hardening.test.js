@@ -104,10 +104,26 @@ test('renderHarden shows one Apply for unsafe rows and none for safe or unavaila
     assert.match(html, /Apply Off/);
 });
 
-test('renderParts always carries a harden row and count', () => {
+test('renderParts always carries the Harden body and its summary state', () => {
     const parts = renderParts({ status: {}, hardening: readState(inspectOf(safeSettings({ 'security.workspace.trust.enabled': { defaultValue: true, globalValue: false } }))) });
     assert.match(parts.harden, /data-harden="workspaceTrust"/);
-    assert.equal(parts['count-harden'], '1');
+    assert.match(parts['harden-state'], /hardenstate__dot--warn/);
+    assert.match(parts['harden-state'], />1</); // one check open
+    assert.match(parts['harden-state'], /data-url="https:\/\/yeethsecurity\.com\/guides\/vscode-extension-malware\/"/);
+    assert.doesNotMatch(parts['harden-state'], /hardenstate__dot--ok/);
+});
+
+test('the Harden summary is one word with a circled check when everything is safe', () => {
+    const { renderHardenState } = require('../ui/paneSections');
+    const safeHtml = renderHardenState(readState(inspectOf(safeSettings())));
+    assert.match(safeHtml, /hardenstate__dot--ok/);
+    assert.match(safeHtml, /<svg/); // the check glyph
+    assert.match(safeHtml, /All checks are in the safe state/);
+    assert.match(safeHtml, /Read the article/);
+
+    const openHtml = renderHardenState(readState(inspectOf(safeSettings({ 'extensions.autoUpdateDelay': undefined }))));
+    assert.match(openHtml, /hardenstate__dot--warn/);
+    assert.match(openHtml, /not available in this editor/);
 });
 
 test('applyCheck writes the recommended value only when the check is unsafe', async () => {

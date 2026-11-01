@@ -16,10 +16,11 @@ const guideLink = (cls = 'link') => `<button type="button" class="${cls}" data-u
  * Eyebrow summary (mono, uppercase) + card body. Mirrors pkgscan's
  * label-over-card rhythm. `key` names the DOM ids (`#<key>` for the body,
  * `#count-<key>` for the badge) that incremental updates replace.
+ * `extra` is optional summary HTML, used by Harden for its status icon.
  */
-function section(key, title, count, body, open = true) {
+function section(key, title, count, body, open = true, extra = '') {
     const badge = count === null ? '' : `<span class="count" id="count-${key}">${count}</span>`;
-    return `<details data-section="${key}" ${open ? 'open' : ''}><summary class="eyebrow">${title}${badge}</summary><div class="card" id="${key}">${body}</div></details>`;
+    return `<details data-section="${key}" ${open ? 'open' : ''}><summary class="eyebrow">${title}${badge}${extra}</summary><div class="card" id="${key}">${body}</div></details>`;
 }
 
 /**
@@ -90,6 +91,41 @@ function renderRemoved(removed) {
  * explanation, and one Apply button while the value is unsafe. Rows never
  * carry an "apply all" — each click changes exactly one user setting.
  */
+const HARDEN_GUIDE_URL = 'https://yeethsecurity.com/guides/vscode-extension-malware/';
+const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4 10-10"/></svg>';
+
+/**
+ * The section's status icon: one word title, a circled check on the right,
+ * and a hover card that explains the checks and links to the guide.
+ * Rendered inside `<summary>` so it also works with the keyboard.
+ */
+function renderHardenState(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const unsafe = list.filter(r => r.state === 'unsatisfied').length;
+    const unknown = list.filter(r => r.state === 'unavailable').length;
+    const safe = list.length > 0 && list.every(r => r.state === 'satisfied');
+
+    const dot = safe
+        ? `<span class="hardenstate__dot hardenstate__dot--ok" aria-hidden="true">${ICON_CHECK}</span>`
+        : `<span class="hardenstate__dot hardenstate__dot--warn" aria-hidden="true">${unsafe || '!'}</span>`;
+    const label = safe
+        ? 'All checks are in the safe state'
+        : unsafe > 0
+            ? `${unsafe} of ${list.length} checks need attention`
+            : `No fixable checks are open, but ${unknown} not available in this editor`;
+    const detail = safe
+        ? 'Automatic tasks, update cooldown, trust prompt, extension recommendations, and Workspace Trust are set safely.'
+        : 'These five settings decide whether a repository can run code when you open it.';
+    const note = !safe && unsafe > 0 && unknown > 0 ? ` ${unknown} more not available in this editor.` : '';
+
+    return `<span class="hardenstate" tabindex="0" aria-label="${esc(label)}. ${esc(detail)}${esc(note)}">
+      ${dot}
+      <span class="hardenstate__tip" role="tooltip"><b>${esc(label)}.</b> ${esc(detail)}${esc(note)}
+        <button type="button" class="link" data-url="${esc(HARDEN_GUIDE_URL)}">Read the article ↗</button>
+      </span>
+    </span>`;
+}
+
 function renderHarden(rows) {
     const list = Array.isArray(rows) ? rows : [];
     if (list.length === 0) return '<div class="harden" data-all-safe="0"><p class="empty">No hardening checks available.</p></div>';
@@ -167,4 +203,4 @@ function renderInventory(inv) {
     return `<p class="empty">Captured ${fmtDateTime(inv.at)}. Each hash is the SHA-256 of that extension's <span class="mono">package.json</span>.</p>${rows}`;
 }
 
-module.exports = { section, timeline, renderRuns, renderRemoved, renderHarden, renderAudit, renderInventory, AUDIT_LABELS };
+module.exports = { section, timeline, renderRuns, renderRemoved, renderHarden, renderHardenState, HARDEN_GUIDE_URL, renderAudit, renderInventory, AUDIT_LABELS };

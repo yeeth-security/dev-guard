@@ -160,6 +160,18 @@ const PANE_CSS = `
   .harden__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
   .harden__title { font-weight: 600; font-size: 12.5px; }
   .harden__actions { margin-top: 7px; }
+  /* Section status: one word + circled check, hover card links the guide. */
+  #harden-state { margin-left: auto; display: inline-flex; }
+  .hardenstate { position: relative; display: inline-flex; align-items: center; cursor: default; }
+  .hardenstate__dot { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-family: var(--mono); font-size: 10px; font-weight: 700; }
+  .hardenstate__dot--ok { background: var(--green-tint); border: 1px solid var(--green); color: var(--green); }
+  .hardenstate__dot--warn { background: var(--amber-tint); border: 1px solid var(--amber); color: var(--amber-deep); }
+  .hardenstate__dot svg { width: 11px; height: 11px; }
+  .hardenstate__tip { display: none; position: absolute; z-index: 20; right: 0; top: calc(100% + 8px); width: 230px; max-width: calc(100vw - 24px); padding: 9px 10px; border-radius: 10px; border: 1px solid var(--hair-strong); background: var(--vscode-editorHoverWidget-background, #fff); color: var(--ink); font-family: var(--sans); font-size: 11.5px; font-weight: 400; line-height: 1.45; letter-spacing: normal; text-transform: none; box-shadow: 0 10px 28px rgba(15, 23, 42, .18); user-select: text; cursor: auto; }
+  .hardenstate__tip b { font-weight: 600; }
+  .hardenstate__tip .link { display: inline-block; margin-top: 6px; font-size: 11.5px; }
+  .hardenstate:hover .hardenstate__tip, .hardenstate:focus .hardenstate__tip, .hardenstate:focus-within .hardenstate__tip { display: block; }
+  body.vscode-dark .hardenstate__tip, body.vscode-high-contrast:not(.vscode-high-contrast-light) .hardenstate__tip { background: var(--vscode-editorHoverWidget-background, #1e293b); box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
 
   /* ── Audit log events ── */
   .evt { position: relative; padding: 2px 0 10px; }
