@@ -39,7 +39,7 @@ const CHECKS = Object.freeze([
     {
         id: 'automaticTasks',
         key: 'task.allowAutomaticTasks',
-        label: 'Automatic tasks',
+        label: 'Auto-run tasks',
         recommended: AUTOMATIC_TASKS,
         isSafe: value => String(value).toLowerCase() === AUTOMATIC_TASKS,
         format: value => (String(value).toLowerCase() === 'on' ? 'On' : 'Off'),
@@ -50,7 +50,7 @@ const CHECKS = Object.freeze([
     {
         id: 'autoUpdateDelay',
         key: 'extensions.autoUpdateDelay',
-        label: 'Update cooldown',
+        label: 'Auto-update delay',
         recommended: AUTO_UPDATE_DELAY,
         isSafe: value => Number(value) >= AUTO_UPDATE_DELAY,
         format: value => (Number(value) > 0 ? `${Number(value)} h` : 'Off'),
@@ -62,7 +62,7 @@ const CHECKS = Object.freeze([
     {
         id: 'trustPrompt',
         key: 'security.workspace.trust.startupPrompt',
-        label: 'Trust prompt',
+        label: 'Folder trust',
         recommended: TRUST_STARTUP_PROMPT,
         isSafe: value => String(value).toLowerCase() === TRUST_STARTUP_PROMPT,
         format: value => {
@@ -76,7 +76,7 @@ const CHECKS = Object.freeze([
     {
         id: 'ignoreRecommendations',
         key: 'extensions.ignoreRecommendations',
-        label: 'Recommendations',
+        label: 'Install suggestions',
         recommended: IGNORE_RECOMMENDATIONS,
         isSafe: value => value === true,
         format: value => (value === true ? 'Hidden' : 'Shown'),

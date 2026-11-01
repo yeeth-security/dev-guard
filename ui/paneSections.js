@@ -159,10 +159,10 @@ function renderHarden(rows) {
         return `<div class="harden__row">
           <div class="harden__head">
             <span class="harden__title">${esc(row.label)}</span>
-            ${hardenStatus(row)}
             <span class="harden__info" tabindex="0" aria-label="More about ${esc(row.label)}">${ICON_INFO}
               <span class="harden__tip" role="tooltip"><b>${esc(row.label)}</b> — ${esc(current)}${esc(recommended)}${row.tooltip ? ` ${esc(row.tooltip)}` : ''}</span>
             </span>
+            ${hardenStatus(row)}
           </div>
           ${error}${apply}
         </div>`;

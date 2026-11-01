@@ -157,20 +157,19 @@ const PANE_CSS = `
   /* ── Harden rows: flat checklist lines, status glyphs, no value boxes ── */
   .harden { display: flex; flex-direction: column; }
   .harden > .empty { margin-bottom: 6px; }
-  .harden__row { padding: 8px 0; border-bottom: 1px solid var(--hair); }
-  .harden__row:first-of-type { padding-top: 2px; }
-  .harden__row:last-child { padding-bottom: 0; border-bottom: 0; }
-  .harden__head { display: flex; align-items: center; gap: 6px; }
+  .harden__row { position: relative; padding: 8px 0; }
+  .harden__row:last-child { padding-bottom: 0; }
+  .harden__head { display: flex; align-items: center; gap: 4px; }
   .harden__title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; font-size: 12px; white-space: nowrap; }
-  .harden__status { margin-left: auto; display: inline-flex; width: 15px; height: 15px; }
-  .harden__status svg { width: 15px; height: 15px; }
+  .harden__status { margin-left: auto; display: inline-flex; width: 13px; height: 13px; }
+  .harden__status svg { width: 13px; height: 13px; }
   .harden__status.is-ok { color: var(--green); }
   .harden__status.is-bad { color: var(--red); }
   .harden__status.is-warn { color: var(--amber-deep); }
-  .harden__info { position: relative; display: inline-flex; width: 15px; height: 15px; color: var(--muted); cursor: help; }
-  .harden__info svg { width: 15px; height: 15px; }
+  .harden__info { display: inline-flex; width: 13px; height: 13px; color: var(--muted); cursor: help; }
+  .harden__info svg { width: 13px; height: 13px; }
   .harden__info:hover, .harden__info:focus { color: var(--ink); }
-  .harden__tip { display: none; position: absolute; z-index: 20; right: 0; top: calc(100% + 8px); width: 235px; max-width: calc(100vw - 24px); padding: 9px 10px; border-radius: 10px; border: 1px solid var(--hair-strong); background: var(--vscode-editorHoverWidget-background, #fff); color: var(--ink); font-family: var(--sans); font-size: 11.5px; font-weight: 400; line-height: 1.45; letter-spacing: normal; text-transform: none; box-shadow: 0 10px 28px rgba(15, 23, 42, .18); user-select: text; cursor: auto; }
+  .harden__tip { display: none; position: absolute; z-index: 20; right: 0; top: calc(100% + 2px); width: 235px; max-width: calc(100vw - 24px); padding: 9px 10px; border-radius: 10px; border: 1px solid var(--hair-strong); background: var(--vscode-editorHoverWidget-background, #fff); color: var(--ink); font-family: var(--sans); font-size: 11.5px; font-weight: 400; line-height: 1.45; letter-spacing: normal; text-transform: none; box-shadow: 0 10px 28px rgba(15, 23, 42, .18); user-select: text; cursor: auto; }
   .harden__tip b { font-weight: 600; }
   .harden__info:hover .harden__tip, .harden__info:focus .harden__tip, .harden__info:focus-within .harden__tip { display: block; }
   body.vscode-dark .harden__tip, body.vscode-high-contrast:not(.vscode-high-contrast-light) .harden__tip { background: var(--vscode-editorHoverWidget-background, #1e293b); box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
