@@ -42,17 +42,19 @@ const CHECKS = Object.freeze([
         label: 'Auto-run tasks',
         recommended: AUTOMATIC_TASKS,
         isSafe: value => String(value).toLowerCase() === AUTOMATIC_TASKS,
+        isOn: value => String(value).toLowerCase() === 'on',
         format: value => (String(value).toLowerCase() === 'on' ? 'On' : 'Off'),
         safeDetail: 'Tasks in a folder cannot run just because the folder opened.',
         unsafeDetail: 'A task in .vscode/tasks.json can run as soon as the folder opens.',
-        tooltip: 'Recommended: off. VS Code 1.109+ defaults to off; anyone who turned it on earlier keeps it on.'
+        tooltip: 'VS Code 1.109+ defaults to off; anyone who turned it on earlier keeps it on.'
     },
     {
         id: 'autoUpdateDelay',
         key: 'extensions.autoUpdateDelay',
-        label: 'Auto-update delay',
+        label: 'Delay auto-updates',
         recommended: AUTO_UPDATE_DELAY,
         isSafe: value => Number(value) >= AUTO_UPDATE_DELAY,
+        isOn: value => Number(value) > 0,
         format: value => (Number(value) > 0 ? `${Number(value)} h` : 'Off'),
         safeDetail: 'Extension updates wait before they install, leaving a window to pull a bad one.',
         unsafeDetail: 'Extension updates install right away, with no window to pull a bad one.',
@@ -62,27 +64,29 @@ const CHECKS = Object.freeze([
     {
         id: 'trustPrompt',
         key: 'security.workspace.trust.startupPrompt',
-        label: 'Folder trust',
+        label: 'Ask before trust',
         recommended: TRUST_STARTUP_PROMPT,
         isSafe: value => String(value).toLowerCase() === TRUST_STARTUP_PROMPT,
+        isOn: value => String(value).toLowerCase() === TRUST_STARTUP_PROMPT,
         format: value => {
             const text = String(value || '').toLowerCase();
             return text ? text.charAt(0).toUpperCase() + text.slice(1) : 'Unknown';
         },
         safeDetail: 'Opening a folder always asks before it is trusted.',
         unsafeDetail: 'A folder can be trusted without the editor asking first.',
-        tooltip: 'Recommended: always. Trust becomes a decision instead of a default.'
+        tooltip: 'Trust becomes a decision instead of a default.'
     },
     {
         id: 'ignoreRecommendations',
         key: 'extensions.ignoreRecommendations',
-        label: 'Install suggestions',
+        label: 'Hide suggestions',
         recommended: IGNORE_RECOMMENDATIONS,
         isSafe: value => value === true,
+        isOn: value => value === true,
         format: value => (value === true ? 'Hidden' : 'Shown'),
         safeDetail: 'A repository cannot nudge you to install the extensions it lists.',
         unsafeDetail: '.vscode/extensions.json can nudge you to install the extensions it lists.',
-        tooltip: 'Extension recommendations. Recommended: hidden. Stops a repository from recommending its own extensions.'
+        tooltip: 'Stops a repository from recommending its own extensions.'
     },
     {
         id: 'workspaceTrust',
@@ -90,10 +94,11 @@ const CHECKS = Object.freeze([
         label: 'Workspace Trust',
         recommended: WORKSPACE_TRUST_ENABLED,
         isSafe: value => value === true,
+        isOn: value => value === true,
         format: value => (value === true ? 'On' : 'Off'),
         safeDetail: 'Restricted Mode is available to block terminals, tasks, and debugging.',
         unsafeDetail: 'Restricted Mode is off, so an unknown folder is never sandboxed.',
-        tooltip: 'Recommended: on. This is the base switch for everything else in this section.'
+        tooltip: 'This is the base switch for everything else in this section.'
     }
 ]);
 
@@ -140,6 +145,7 @@ function readCheck(inspectFn, check) {
             state: 'unavailable',
             value: undefined,
             valueLabel: 'Not available',
+            on: false,
             recommended: check.recommended,
             recommendedLabel: check.format(check.recommended),
             detail: check.unavailableDetail || 'This editor does not have this setting.',
@@ -158,6 +164,7 @@ function readCheck(inspectFn, check) {
         state,
         value,
         valueLabel: check.format(value),
+        on: check.isOn(value),
         recommended: check.recommended,
         recommendedLabel: check.format(check.recommended),
         detail: state === 'satisfied' ? check.safeDetail : check.unsafeDetail,

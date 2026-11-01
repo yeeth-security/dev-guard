@@ -90,21 +90,23 @@ test('all five checks satisfied makes the section one line', () => {
     assert.match(html, /All 5 checks are in the safe state/);
 });
 
-test('renderHarden shows one Apply for unsafe rows and none for safe or unavailable', () => {
+test('renderHarden shows a switch for unsafe rows and none for safe or unavailable', () => {
     const rows = readState(inspectOf(safeSettings({
         'task.allowAutomaticTasks': { defaultValue: 'off', globalValue: 'on' },
+        'security.workspace.trust.startupPrompt': { defaultValue: 'once', globalValue: 'once' },
         'extensions.autoUpdateDelay': undefined
     })));
     const html = renderHarden(rows);
     assert.match(html, /data-all-safe="0"/);
     assert.match(html, /data-harden="automaticTasks"/);
-    assert.equal((html.match(/data-harden=/g) || []).length, 1); // no apply-all, one button
+    assert.equal((html.match(/data-harden=/g) || []).length, 2); // one switch per unsafe check, never an apply-all
     assert.doesNotMatch(html, /data-harden="autoUpdateDelay"/);
     assert.match(html, /Not available/);
-    assert.match(html, /Apply Off/);
-    assert.match(html, /harden__status is-bad/); // unsafe -> X
+    assert.match(html, /Recommended: Off/);
+    assert.match(html, /class="switch is-checked" role="switch" aria-checked="true" data-harden="automaticTasks"/); // tasks on -> switch on
+    assert.match(html, /class="switch" role="switch" aria-checked="false" data-harden="trustPrompt"/); // not always -> switch off
+    assert.match(html, /class="switch is-safe is-checked" role="switch" aria-checked="true"/); // safe -> green switch
     assert.match(html, /harden__status is-warn/); // unsupported -> !
-    assert.match(html, /harden__status is-ok/); // safe -> check
     assert.doesNotMatch(html, /class="tag/); // no value pill: glyphs only
 });
 

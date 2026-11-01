@@ -161,10 +161,14 @@ const PANE_CSS = `
   .harden__row:last-child { padding-bottom: 0; }
   .harden__head { display: flex; align-items: center; gap: 4px; }
   .harden__title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; font-size: 12px; white-space: nowrap; }
-  .harden__status { margin-left: auto; display: inline-flex; width: 13px; height: 13px; }
+  .harden__control { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+  .harden__rec { font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+  .switch { display: inline-flex; align-items: center; width: 28px; height: 17px; padding: 2px; border: 0; border-radius: 999px; background: var(--red); cursor: pointer; transition: background .15s ease; }
+  .switch__knob { width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .35); transition: transform .15s ease; }
+  .switch.is-safe { background: var(--green); cursor: default; }
+  .switch.is-checked .switch__knob { transform: translateX(11px); }
+  .harden__status { display: inline-flex; width: 13px; height: 13px; }
   .harden__status svg { width: 13px; height: 13px; }
-  .harden__status.is-ok { color: var(--green); }
-  .harden__status.is-bad { color: var(--red); }
   .harden__status.is-warn { color: var(--amber-deep); }
   .harden__info { display: inline-flex; width: 13px; height: 13px; color: var(--muted); cursor: help; }
   .harden__info svg { width: 13px; height: 13px; }
@@ -173,7 +177,6 @@ const PANE_CSS = `
   .harden__tip b { font-weight: 600; }
   .harden__info:hover .harden__tip, .harden__info:focus .harden__tip, .harden__info:focus-within .harden__tip { display: block; }
   body.vscode-dark .harden__tip, body.vscode-high-contrast:not(.vscode-high-contrast-light) .harden__tip { background: var(--vscode-editorHoverWidget-background, #1e293b); box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
-  .harden__actions { margin-top: 6px; }
   /* Section status: one word + circled check, hover card links the guide. */
   #harden-state { margin-left: auto; display: inline-flex; }
   .hardenstate { position: relative; display: inline-flex; align-items: center; cursor: default; }
@@ -212,6 +215,7 @@ const PANE_CSS = `
     .btn--secondary { flex: 1; }
     .evt__type { margin-left: 0; text-align: left; }
     .run__head { flex-wrap: wrap; }
+    .harden__rec { display: none; } /* keep the switch on the row; recommendation stays in the info card */
   }
 
   @keyframes orbit { to { transform: rotate(360deg); } }
