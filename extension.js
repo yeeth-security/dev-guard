@@ -191,6 +191,22 @@ function resolveRegistry() {
  */
 const removedThisSession = new Set();
 
+/**
+ * Findings already sent as `malicious_found` telemetry during THIS session.
+ * Key: `<extensionId lower-case>@<installedVersion>`.
+ *
+ * Why this exists: an audit cycle runs at startup, every ~5 minutes, on focus,
+ * on extension change, and on manual scans. A finding can stay live for many
+ * cycles (failed uninstall, `warn` / `manual` mode, reinstall loop). Without
+ * this set, the same finding was re-sent on every cycle. Only the telemetry
+ * call is deduped. Notifier, auto-uninstall, history, and output channel
+ * still run every cycle.
+ *
+ * In memory on purpose (simplest option). A window reload reports it once more.
+ * A new version of the same extension is a new key, so it is reported once.
+ */
+const reportedFindings = new Set();
+
 function getPaneStatus(context) {
     const { registry, method, detected, marketplaceMode, marketplaceUrl } = resolveRegistry();
     const state = loadSyncState(context);
@@ -361,11 +377,16 @@ async function checkAndReportMaliciousExtensions(context, telemetry, outputChann
         telemetry?.record('poll_completed', { trigger, duration, findings: found.length, mode: removalMode, stale: Boolean(stale) });
 
         for (const { extension, advisory } of found) {
+            const installedVersion = (extension.packageJSON && extension.packageJSON.version) || 'unknown';
+            // Skip telemetry if this exact extension + version was already reported.
+            const reportKey = `${String(extension.id || '').toLowerCase()}@${installedVersion}`;
+            if (reportedFindings.has(reportKey)) continue;
+            reportedFindings.add(reportKey);
             telemetry?.record('malicious_found', {
                 extension_id: extension.id,
                 severity: advisory.severity || 'unknown',
                 source: 'pkgscan',
-                installed_version: (extension.packageJSON && extension.packageJSON.version) || 'unknown'
+                installed_version: installedVersion
             });
         }
 
@@ -436,5 +457,7 @@ module.exports = {
     activate,
     deactivate,
     findMatchingAdvisories,
-    classifySource
+    classifySource,
+    // Exported so tests can run a full audit cycle.
+    checkAndReportMaliciousExtensions
 };
