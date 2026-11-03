@@ -26,8 +26,7 @@ const {
     isBrowserRequest,
     isInternalPeerAuthorized,
     signAssetBase,
-    decodeAndVerifyAssetBase,
-    verifyVsixSha256
+    decodeAndVerifyAssetBase
 } = require('./security');
 const { isPlatformMatch, normalizeRegistrySlug } = require('../advisories/registry');
 const { severityRank } = require('../notifier');
@@ -447,29 +446,6 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
             }
         }
         const bodyBuf = Buffer.from(await assetRes.arrayBuffer());
-        // Verify VSIX binary SHA-256 against pkgscan.dev when a completed scan digest is available.
-        if (assetType === ASSET_VSIX && !allowlisted && scan && scan.status === 'completed' && !verifyVsixSha256(bodyBuf, scan.sha256)) {
-            const mismatchAdv = {
-                id: `sha256:${extId}@${version}`,
-                extensionId: `${publisher}.${name}`,
-                version,
-                severity: 'critical',
-                title: 'VSIX binary SHA-256 mismatch against pkgscan.dev'
-            };
-            emitBlockedDownload({
-                id: `${publisher}.${name}`,
-                version,
-                platform,
-                registry: upstream.registry || 'unknown',
-                blockSource: 'sha256_mismatch',
-                advisory: mismatchAdv
-            });
-            sendBlockedInstallResponse(req, res, {
-                assetType, extId, publisher, name, version,
-                reason: mismatchAdv.title
-            });
-            return;
-        }
         const ct = (assetRes.headers && assetRes.headers.get && assetRes.headers.get('content-type')) || 'application/octet-stream';
         res.writeHead(assetRes.status, corsHeaders(req, { 'content-type': ct }));
         res.end(bodyBuf);

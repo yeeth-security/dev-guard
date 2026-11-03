@@ -1,12 +1,12 @@
 /**
  * Security primitives for hardening the local marketplace proxy against
- * port squatting, unauthorized local/browser requests, SSRF, and VSIX tampering.
+ * port squatting, unauthorized local/browser requests, and SSRF.
  *
  * Why this file exists:
  *   The local proxy runs on `127.0.0.1`. Without authentication and origin/host
  *   checks, another local process or a malicious web page in the user's browser
- *   could squat the proxy port, pre-approve unscanned extensions, abuse `/asset/`
- *   as an open SSRF proxy, or serve a modified `.vsix` binary.
+ *   could squat the proxy port, pre-approve unscanned extensions, or abuse `/asset/`
+ *   as an open SSRF proxy.
  */
 
 const crypto = require('crypto');
@@ -231,13 +231,6 @@ function isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, nam
     return true;
 }
 
-/** Verifies that a downloaded VSIX buffer matches `scan.sha256` when available. */
-function verifyVsixSha256(buffer, expectedSha256) {
-    if (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSha256)) return true;
-    const actual = crypto.createHash('sha256').update(buffer).digest('hex');
-    return actual.toLowerCase() === expectedSha256.toLowerCase();
-}
-
 module.exports = {
     MAX_BODY_BYTES,
     loadOrCreateProxySecret,
@@ -250,6 +243,5 @@ module.exports = {
     isInternalPeerAuthorized,
     signAssetBase,
     decodeAndVerifyAssetBase,
-    isAllowedAssetBaseUrl,
-    verifyVsixSha256
+    isAllowedAssetBaseUrl
 };

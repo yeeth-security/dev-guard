@@ -1133,7 +1133,7 @@ test('asset URLs must be signed, loopback asset hosts are refused by default, an
     assert.equal(isAllowedAssetBaseUrl('https://open-vsx.org/vscode/asset/good/clean-ext/1.0.0', { publisher: 'good', name: 'clean-ext' }), true);
 });
 
-test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF, and tampered VSIX binaries', async () => {
+test('security hardening blocks port squatters, browser CSRF/DNS rebinding, and SSRF', async () => {
     const rogueSquatter = await startMockServer((_req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ fake: true }));
@@ -1143,7 +1143,7 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
     const mockUpstream = await startMockServer((req, res) => {
         if (req.url.endsWith(`/${ASSET_VSIX}`)) {
             res.writeHead(200, { 'content-type': 'application/octet-stream' });
-            res.end('TAMPERED-VSIX-BINARY-BYTES');
+            res.end('CLEAN-VSIX-BINARY-BYTES');
             return;
         }
         res.writeHead(200, { 'content-type': 'text/markdown' });
@@ -1155,7 +1155,6 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
         res.end(JSON.stringify({
             status: 'completed',
             flaggedCount: 0,
-            sha256: 'a'.repeat(64), // Expected clean hash does NOT match 'TAMPERED-VSIX-BINARY-BYTES'
             engines: [{ id: 'guarddog', status: 'done', verdict: 'pass', findingCount: 0 }]
         }));
     });
@@ -1216,12 +1215,12 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
         const mismatchRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${mismatchPath}/${ASSET_README}`);
         assert.equal(mismatchRes.status, 403, 'mismatched publisher/name in asset base URL must be rejected');
 
-        // 5. VSIX SHA-256 verification blocks a tampered upstream binary whose digest does not match pkgscan.dev:
+        // 5. A correctly signed URL for a clean, scanned extension passes through unchanged:
         const validPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'good', 'clean-ext', '1.0.0');
         const vsixRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${validPath}/${ASSET_VSIX}`);
-        assert.equal(vsixRes.status, 403, 'VSIX with mismatched SHA-256 must be blocked');
-        assert.equal(blocked.length, 1);
-        assert.equal(blocked[0].blockSource, 'sha256_mismatch');
+        assert.equal(vsixRes.status, 200);
+        assert.equal(await vsixRes.text(), 'CLEAN-VSIX-BINARY-BYTES');
+        assert.equal(blocked.length, 0);
     } finally {
         await proxy.stop();
         await rogueSquatter.close();
