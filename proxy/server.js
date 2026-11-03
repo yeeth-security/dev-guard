@@ -11,9 +11,23 @@
  *        extension version has not been scanned on pkgscan.dev yet.
  */
 
+const crypto = require('crypto');
 const http = require('http');
 const { DEFAULT_PROXY_PORT, PROXY_GALLERY_PATH } = require('./config');
 const { buildPkgscanUrls, createScanFetcher, scanBlockAdvisory, injectReadmeScanData, DEFAULT_PKGSCAN_BASE_URL } = require('./readme');
+const {
+    MAX_BODY_BYTES,
+    loadOrCreateProxySecret,
+    safeEqual,
+    computeHandshakeMac,
+    verifyPeerServer,
+    isAllowedHost,
+    isAllowedOrigin,
+    isInternalPeerAuthorized,
+    signAssetBase,
+    decodeAndVerifyAssetBase,
+    verifyVsixSha256
+} = require('./security');
 const { isPlatformMatch, normalizeRegistrySlug } = require('../advisories/registry');
 const { severityRank } = require('../notifier');
 
@@ -104,7 +118,7 @@ function matchAdvisoryForExtension({ publisher, name, version, platform, registr
     return matches[0];
 }
 
-function rewriteGalleryExtension(ext, { proxyOrigin, getAdvisories, isAllowlisted, registry, uuidByExtId }) {
+function rewriteGalleryExtension(ext, { proxyOrigin, getAdvisories, isAllowlisted, registry, uuidByExtId, secret }) {
     if (!ext || typeof ext !== 'object' || !Array.isArray(ext.versions)) return ext;
     const publisher = (ext.publisher && ext.publisher.publisherName) || '';
     const name = ext.extensionName || '';
@@ -128,14 +142,18 @@ function rewriteGalleryExtension(ext, { proxyOrigin, getAdvisories, isAllowliste
         const advisory = matchAdvisoryForExtension({ publisher, name, version, platform, registry, assetBaseUrl: origAsset, advisories });
         const shouldBlock = Boolean(advisory && !allowlisted);
 
-        const encAsset = Buffer.from(String(origAsset).replace(/\/+$/, ''), 'utf8').toString('base64url');
+        const encAsset = secret
+            ? signAssetBase(secret, { decodedBase: origAsset, publisher, name, version, platform })
+            : Buffer.from(String(origAsset).replace(/\/+$/, ''), 'utf8').toString('base64url');
         const suffix = `${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/${encodeURIComponent(platform)}`;
         ver.assetUri = `${proxyOrigin}/asset/${encAsset}/${suffix}`;
 
         const cleanFallback = openVsxFallbackUrl(origFallback) || origFallback;
         const hasIcon = Array.isArray(ver.files) && ver.files.some(f => f && f.assetType === ASSET_ICON);
         if (shouldBlock && origFallback && !hasIcon) {
-            const encFallback = Buffer.from(String(origFallback).replace(/\/+$/, ''), 'utf8').toString('base64url');
+            const encFallback = secret
+                ? signAssetBase(secret, { decodedBase: origFallback, publisher, name, version, platform })
+                : Buffer.from(String(origFallback).replace(/\/+$/, ''), 'utf8').toString('base64url');
             ver.fallbackAssetUri = `${proxyOrigin}/asset/${encFallback}/${suffix}`;
         } else if (origFallback) {
             ver.fallbackAssetUri = cleanFallback;
@@ -154,10 +172,21 @@ function rewriteGalleryExtension(ext, { proxyOrigin, getAdvisories, isAllowliste
     return ext;
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = MAX_BODY_BYTES) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        req.on('data', c => chunks.push(c));
+        let total = 0;
+        req.on('data', c => {
+            total += c.length;
+            if (total > maxBytes) {
+                const err = new Error('Payload Too Large');
+                err.statusCode = 413;
+                reject(err);
+                try { req.destroy(); } catch (_e) { /* ignore */ }
+                return;
+            }
+            chunks.push(c);
+        });
         req.on('end', () => resolve(Buffer.concat(chunks)));
         req.on('error', reject);
     });
@@ -165,8 +194,11 @@ function readBody(req) {
 
 function corsHeaders(req, extra = {}) {
     const reqHeaders = req && req.headers && req.headers['access-control-request-headers'];
+    const origin = (req && req.headers && req.headers.origin && isAllowedOrigin(req))
+        ? req.headers.origin
+        : 'vscode-file://vscode-app';
     return {
-        'access-control-allow-origin': (req && req.headers && req.headers.origin) || '*',
+        'access-control-allow-origin': origin,
         'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS, HEAD',
         'access-control-allow-headers': reqHeaders || 'Content-Type, Accept, Authorization, X-Market-Client-Id, X-Market-User-Id, VSCode-SessionId, X-Market-Search-Activity-Id, X-OG-Device-Group',
         'access-control-allow-private-network': 'true',
@@ -176,12 +208,13 @@ function corsHeaders(req, extra = {}) {
     };
 }
 
-function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onBlockedDownload, onUnscannedInstall, onUnscannedDecision, onFlaggedReadmeViewed, pkgscanBaseUrl = DEFAULT_PKGSCAN_BASE_URL, fetchImpl = fetch }) {
+function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, isAllowlisted, onBlockedDownload, onUnscannedInstall, onUnscannedDecision, onFlaggedReadmeViewed, pkgscanBaseUrl = DEFAULT_PKGSCAN_BASE_URL, fetchImpl = fetch }) {
     let server = null;
     let listeningPort = null;
     let standbyTimer = null;
     let peerStreamReq = null;
     let lastBlockedUntil = 0;
+    const proxySecret = secret || loadOrCreateProxySecret(context);
     const eventClients = new Set();
     const activeSockets = new Set();
     const blockedReasons = new Map();
@@ -209,20 +242,23 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
         return true;
     }
 
-    function resolveUnscannedDecision(key, decision) {
+    function resolveUnscannedDecision(key, decision, decisionToken) {
+        const entry = pendingDecisions.get(key);
+        if (!entry) return false;
+        if (decisionToken !== undefined && !safeEqual(String(decisionToken), entry.decisionToken)) {
+            return false;
+        }
         if (decision === 'continue') {
             unscannedApproved.set(key, Date.now() + UNSCANNED_APPROVAL_TTL_MS);
         }
-        const entry = pendingDecisions.get(key);
-        if (entry) {
-            clearTimeout(entry.timer);
-            pendingDecisions.delete(key);
-            if (entry.payload) {
-                try { onUnscannedDecision?.({ ...entry.payload, decision }); } catch (_e) { /* ignore */ }
-                broadcastPeerEvent({ event: 'unscanned_decision', ...entry.payload, decision });
-            }
-            entry.resolve(decision);
+        clearTimeout(entry.timer);
+        pendingDecisions.delete(key);
+        if (entry.payload) {
+            try { onUnscannedDecision?.({ ...entry.payload, decision }); } catch (_e) { /* ignore */ }
+            broadcastPeerEvent({ event: 'unscanned_decision', ...entry.payload, decision });
         }
+        entry.resolve(decision);
+        return true;
     }
 
     function promptUnscannedDecision(payload) {
@@ -232,11 +268,12 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
 
         let resolveFn;
         const promise = new Promise(resolve => { resolveFn = resolve; });
+        const decisionToken = crypto.randomBytes(16).toString('hex');
         const timer = setTimeout(() => resolveUnscannedDecision(payload.key, 'cancel'), DECISION_TIMEOUT_MS);
         if (typeof timer.unref === 'function') timer.unref();
-        pendingDecisions.set(payload.key, { promise, resolve: resolveFn, timer, payload });
+        pendingDecisions.set(payload.key, { promise, resolve: resolveFn, timer, payload, decisionToken });
 
-        broadcastPeerEvent({ event: 'unscanned', ...payload });
+        broadcastPeerEvent({ event: 'unscanned', decisionToken, ...payload });
         if (typeof onUnscannedInstall === 'function') {
             Promise.resolve(onUnscannedInstall({ ...payload, hasPeers: eventClients.size > 0 }))
                 .then(decision => { if (decision && decision !== 'defer') resolveUnscannedDecision(payload.key, decision); })
@@ -289,10 +326,19 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
         const extId = `${publisher}.${name}`.toLowerCase();
         const extVerKey = `${extId}@${version || 'latest'}`;
 
-        let decodedBase = '';
-        try { decodedBase = Buffer.from(encBase, 'base64url').toString('utf8'); } catch (_e) { /* ignore */ }
-        if (!/^https?:\/\//i.test(decodedBase) || decodedBase.startsWith(proxyOrigin)) {
-            res.writeHead(400); res.end('Invalid upstream asset base'); return;
+        const decodedBase = decodeAndVerifyAssetBase(encBase, {
+            secret: proxySecret,
+            publisher,
+            name,
+            version,
+            platform,
+            upstreamServiceUrl: upstream.serviceUrl,
+            proxyOrigin
+        });
+        if (!decodedBase) {
+            res.writeHead(403, corsHeaders(req, { 'content-type': 'application/json' }));
+            res.end(JSON.stringify({ error: 'invalid_or_untrusted_asset_base' }));
+            return;
         }
 
         const advisories = typeof getAdvisories === 'function' ? getAdvisories() : [];
@@ -390,30 +436,76 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
                 return;
             }
         }
+        const bodyBuf = Buffer.from(await assetRes.arrayBuffer());
+        // Verify VSIX binary SHA-256 against pkgscan.dev when a completed scan digest is available.
+        if (assetType === ASSET_VSIX && !allowlisted && scan && scan.status === 'completed' && !verifyVsixSha256(bodyBuf, scan.sha256)) {
+            const mismatchAdv = {
+                id: `sha256:${extId}@${version}`,
+                extensionId: `${publisher}.${name}`,
+                version,
+                severity: 'critical',
+                title: 'VSIX binary SHA-256 mismatch against pkgscan.dev'
+            };
+            emitBlockedDownload({
+                id: `${publisher}.${name}`,
+                version,
+                platform,
+                registry: upstream.registry || 'unknown',
+                blockSource: 'sha256_mismatch',
+                advisory: mismatchAdv
+            });
+            sendBlockedInstallResponse(req, res, {
+                assetType, extId, publisher, name, version,
+                reason: mismatchAdv.title
+            });
+            return;
+        }
         const ct = (assetRes.headers && assetRes.headers.get && assetRes.headers.get('content-type')) || 'application/octet-stream';
         res.writeHead(assetRes.status, corsHeaders(req, { 'content-type': ct }));
-        res.end(Buffer.from(await assetRes.arrayBuffer()));
+        res.end(bodyBuf);
     }
 
     async function handleRequest(req, res) {
+        if (!isAllowedHost(req) || !isAllowedOrigin(req)) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'forbidden_origin_or_host' }));
+            return;
+        }
         if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders(req)); res.end(); return; }
         const proxyOrigin = `http://127.0.0.1:${listeningPort}`;
         const urlObj = new URL(req.url || '/', proxyOrigin);
         const upstream = typeof getUpstream === 'function' ? getUpstream() : { serviceUrl: '', registry: null };
 
-        if (req.method === 'GET' && urlObj.pathname === '/_devguard/events') {
-            res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
-            eventClients.add(res);
-            req.on('close', () => eventClients.delete(res));
-            return;
-        }
-        if (req.method === 'POST' && urlObj.pathname === '/_devguard/decision') {
-            try {
-                const body = JSON.parse((await readBody(req)).toString('utf8'));
-                if (body && body.key && body.decision) resolveUnscannedDecision(body.key, body.decision);
-            } catch (_e) { /* ignore */ }
-            res.writeHead(200, corsHeaders(req, { 'content-type': 'application/json' }));
-            res.end(JSON.stringify({ ok: true }));
+        if (urlObj.pathname.startsWith('/_devguard/')) {
+            if (!isInternalPeerAuthorized(req, proxySecret)) {
+                res.writeHead(403, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'unauthorized_peer' }));
+                return;
+            }
+            if (req.method === 'GET' && urlObj.pathname === '/_devguard/verify') {
+                const nonce = urlObj.searchParams.get('nonce') || '';
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, mac: computeHandshakeMac(proxySecret, nonce) }));
+                return;
+            }
+            if (req.method === 'GET' && urlObj.pathname === '/_devguard/events') {
+                res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
+                eventClients.add(res);
+                req.on('close', () => eventClients.delete(res));
+                return;
+            }
+            if (req.method === 'POST' && urlObj.pathname === '/_devguard/decision') {
+                try {
+                    const body = JSON.parse((await readBody(req)).toString('utf8'));
+                    if (body && body.key && body.decision) {
+                        resolveUnscannedDecision(body.key, body.decision, body.decisionToken);
+                    }
+                } catch (_e) { /* ignore */ }
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+                return;
+            }
+            res.writeHead(404); res.end();
             return;
         }
         if (req.method === 'GET' && (urlObj.pathname === '/' || urlObj.pathname === PROXY_GALLERY_PATH)) {
@@ -424,7 +516,16 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
         if (urlObj.pathname.startsWith('/asset/')) return handleAsset(req, res, urlObj.pathname, urlObj.search, proxyOrigin, upstream);
 
         const rel = urlObj.pathname.startsWith(PROXY_GALLERY_PATH) ? urlObj.pathname.slice(PROXY_GALLERY_PATH.length) : urlObj.pathname;
-        const reqBody = req.method === 'POST' || req.method === 'PUT' ? await readBody(req) : undefined;
+        let reqBody;
+        if (req.method === 'POST' || req.method === 'PUT') {
+            try {
+                reqBody = await readBody(req);
+            } catch (err) {
+                res.writeHead((err && err.statusCode) || 413, corsHeaders(req, { 'content-type': 'application/json' }));
+                res.end(JSON.stringify({ error: 'payload_too_large' }));
+                return;
+            }
+        }
 
         if (req.method === 'POST' && rel === '/extensionquery' && reqBody) {
             try {
@@ -465,7 +566,7 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
         const ct = (upstreamRes.headers && upstreamRes.headers.get && upstreamRes.headers.get('content-type')) || 'application/json';
         if (upstreamRes.ok && ct.includes('json')) {
             const data = await upstreamRes.json();
-            const opts = { proxyOrigin, getAdvisories, isAllowlisted, registry: upstream.registry, uuidByExtId };
+            const opts = { proxyOrigin, getAdvisories, isAllowlisted, registry: upstream.registry, uuidByExtId, secret: proxySecret };
             if (Array.isArray(data && data.results)) {
                 data.results.forEach(r => Array.isArray(r && r.extensions) && r.extensions.forEach(ext => rewriteGalleryExtension(ext, opts)));
             } else if (data && Array.isArray(data.versions)) {
@@ -496,7 +597,7 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
                 socket.on('close', () => activeSockets.delete(socket));
             });
             srv.once('error', reject);
-            srv.listen(port, '127.0.0.1', () => {
+            srv.listen({ port, host: '127.0.0.1', exclusive: true }, () => {
                 if (typeof srv.unref === 'function') srv.unref();
                 resolve({ srv, port: srv.address().port });
             });
@@ -533,17 +634,22 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
     process.once('disconnect', onProcessExit);
     process.once('exit', onProcessExit);
 
-    function postPeerDecision(port, key, decision) {
+    function postPeerDecision(port, key, decision, decisionToken) {
         fetchImpl(`http://127.0.0.1:${port}/_devguard/decision`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ key, decision })
+            headers: { 'content-type': 'application/json', 'x-devguard-token': proxySecret },
+            body: JSON.stringify({ key, decision, decisionToken })
         }).catch(() => {});
     }
 
     function connectPeerEvents(port) {
         if (peerStreamReq || server || !listeningPort) return;
-        const req = http.get(`http://127.0.0.1:${port}/_devguard/events`, res => {
+        const req = http.get({
+            hostname: '127.0.0.1',
+            port,
+            path: '/_devguard/events',
+            headers: { 'x-devguard-token': proxySecret }
+        }, res => {
             if (res.statusCode !== 200) { res.resume(); return; }
             let buf = '';
             res.setEncoding('utf8');
@@ -557,7 +663,7 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
                         const msg = JSON.parse(line);
                         if (msg.event === 'unscanned' && typeof onUnscannedInstall === 'function') {
                             Promise.resolve(onUnscannedInstall({ ...msg, fromPeer: true })).then(decision => {
-                                if (decision && decision !== 'defer') postPeerDecision(port, msg.key, decision);
+                                if (decision && decision !== 'defer') postPeerDecision(port, msg.key, decision, msg.decisionToken);
                             }).catch(() => {});
                         } else if (msg.event === 'unscanned_decision') {
                             onUnscannedDecision?.({ ...msg, fromPeer: true });
@@ -584,6 +690,15 @@ function createMarketplaceProxy({ getUpstream, getAdvisories, isAllowlisted, onB
                 return listeningPort;
             } catch (err) {
                 if (err && err.code === 'EADDRINUSE' && preferredPort > 0) {
+                    // Verify the listener on `preferredPort` is a genuine Dev-Guard peer
+                    // holding our secret before trusting it. If verification fails, a rogue
+                    // process is squatting the port — fall back to an ephemeral port (`0`).
+                    const isVerifiedPeer = await verifyPeerServer(preferredPort, proxySecret);
+                    if (!isVerifiedPeer) {
+                        const { srv, port } = await listenOnPort(0);
+                        clearStandby(); server = srv; listeningPort = port;
+                        return listeningPort;
+                    }
                     listeningPort = preferredPort;
                     connectPeerEvents(preferredPort);
                     if (!standbyTimer) {

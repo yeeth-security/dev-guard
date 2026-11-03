@@ -112,7 +112,10 @@ function activate(context) {
         proxy_enabled: proxyController.getStatus().proxyEnabled
     });
     const proxyConfigWatcher = vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('devGuard.proxy.enabled')) {
+        if (
+            e.affectsConfiguration('devGuard.proxy.enabled') ||
+            e.affectsConfiguration('extensions.gallery.serviceUrl')
+        ) {
             void proxyController.sync();
         }
     });

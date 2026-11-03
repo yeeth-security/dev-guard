@@ -978,6 +978,88 @@ test('proxy server unrefs listening socket and closes keep-alive connections imm
     assert.equal(exitCode, 0);
 });
 
+test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF, and tampered VSIX binaries', async () => {
+    const rogueSquatter = await startMockServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ fake: true }));
+    });
+    const squatterPort = Number(new URL(rogueSquatter.url).port);
+
+    const mockUpstream = await startMockServer((req, res) => {
+        if (req.url.endsWith(`/${ASSET_VSIX}`)) {
+            res.writeHead(200, { 'content-type': 'application/octet-stream' });
+            res.end('TAMPERED-VSIX-BINARY-BYTES');
+            return;
+        }
+        res.writeHead(200, { 'content-type': 'text/markdown' });
+        res.end('# Clean README');
+    });
+
+    const mockPkgscan = await startMockServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'completed',
+            flaggedCount: 0,
+            sha256: 'a'.repeat(64), // Expected clean hash does NOT match 'TAMPERED-VSIX-BINARY-BYTES'
+            engines: [{ id: 'guarddog', status: 'done', verdict: 'pass', findingCount: 0 }]
+        }));
+    });
+
+    const blocked = [];
+    const proxy = createMarketplaceProxy({
+        secret: '1'.repeat(64),
+        getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
+        getAdvisories: () => [],
+        onBlockedDownload: info => blocked.push(info),
+        pkgscanBaseUrl: mockPkgscan.url
+    });
+
+    try {
+        // 1. Port-squatting protection: `squatterPort` is occupied by a non-DevGuard server,
+        //    so `proxy.start(squatterPort)` refuses to trust it and binds a fresh ephemeral port.
+        const boundPort = await proxy.start(squatterPort);
+        assert.notEqual(boundPort, squatterPort, 'must not trust an unverified squatter on preferredPort');
+
+        // 2. Browser Origin & Host (DNS rebinding) protection:
+        const badOriginRes = await fetch(`http://127.0.0.1:${boundPort}/_apis/public/gallery`, {
+            headers: { Origin: 'https://evil.example.com' }
+        });
+        assert.equal(badOriginRes.status, 403);
+
+        // 3. Internal control endpoints (`/_devguard/*`) reject unauthenticated local calls:
+        const unauthEvents = await fetch(`http://127.0.0.1:${boundPort}/_devguard/events`);
+        assert.equal(unauthEvents.status, 403);
+        const unauthDecision = await fetch(`http://127.0.0.1:${boundPort}/_devguard/decision`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ key: 'acme.unscanned@1.0.0', decision: 'continue' })
+        });
+        assert.equal(unauthDecision.status, 403);
+
+        // 4. SSRF & Publisher/Asset mismatch protection on `/asset/`:
+        const ssrfEnc = Buffer.from('https://evil.example.com/extensions/good/ext/1.0.0', 'utf8').toString('base64url');
+        const ssrfRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${ssrfEnc}/good/ext/1.0.0/universal/${ASSET_README}`);
+        assert.equal(ssrfRes.status, 403, 'untrusted asset host must be rejected');
+
+        const mismatchEnc = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/evil/other-ext/1.0.0`, 'utf8').toString('base64url');
+        const mismatchRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${mismatchEnc}/good/clean-ext/1.0.0/universal/${ASSET_README}`);
+        assert.equal(mismatchRes.status, 403, 'mismatched publisher/name in asset base URL must be rejected');
+
+        // 5. VSIX SHA-256 verification blocks a tampered upstream binary whose digest does not match pkgscan.dev:
+        const validEnc = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'utf8').toString('base64url');
+        const vsixRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${validEnc}/good/clean-ext/1.0.0/universal/${ASSET_VSIX}`);
+        assert.equal(vsixRes.status, 403, 'VSIX with mismatched SHA-256 must be blocked');
+        assert.equal(blocked.length, 1);
+        assert.equal(blocked[0].blockSource, 'sha256_mismatch');
+    } finally {
+        await proxy.stop();
+        await rogueSquatter.close();
+        await mockUpstream.close();
+        await mockPkgscan.close();
+    }
+});
+
+
 
 
 

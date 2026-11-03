@@ -65,6 +65,7 @@ function createProxyController({ context, vscodeApi, getAdvisories, audit, telem
     }
 
     const proxy = createMarketplaceProxy({
+        context,
         pkgscanBaseUrl,
         getUpstream: () => resolveUpstreamMarketplace(context, vscodeApi),
         getAdvisories,

@@ -89,11 +89,12 @@ function readSetting(vscodeApi, section, key, fallback = '') {
 
 function resolveUpstreamMarketplace(context, vscodeApi, envOverride) {
     const state = loadProxyState(context);
+    const liveGallery = state.active ? '' : readSetting(vscodeApi, 'extensions.gallery', 'serviceUrl', '');
     const candidates = [
-        [readSetting(vscodeApi, 'devGuard', 'marketplace', ''), 'custom URL'],
         [state.savedDevGuardMarketplace, 'custom URL'],
-        [readSetting(vscodeApi, 'extensions.gallery', 'serviceUrl', ''), 'extensions.gallery.serviceUrl'],
-        [state.savedGalleryServiceUrl, 'extensions.gallery.serviceUrl']
+        [readSetting(vscodeApi, 'devGuard', 'marketplace', ''), 'custom URL'],
+        [state.savedGalleryServiceUrl, 'extensions.gallery.serviceUrl'],
+        [liveGallery, 'extensions.gallery.serviceUrl']
     ];
     for (const [raw, method] of candidates) {
         if (typeof raw === 'string' && /^https?:\/\//i.test(raw) && !isLoopbackUrl(raw)) {
@@ -217,10 +218,16 @@ async function applyProxyMarketplaceConfig(context, vscodeApi, port, upstreamSer
     const currentGallery = readSetting(vscodeApi, 'extensions.gallery', 'serviceUrl', '');
     const currentMp = readSetting(vscodeApi, 'devGuard', 'marketplace', '');
     const proxyUrl = buildProxyServiceUrl(port);
+    const savedGalleryServiceUrl = prev.active && prev.savedGalleryServiceUrl !== undefined
+        ? prev.savedGalleryServiceUrl
+        : (!isLoopbackUrl(currentGallery) ? currentGallery : (prev.savedGalleryServiceUrl ?? ''));
+    const savedDevGuardMarketplace = !isLoopbackUrl(currentMp) && currentMp !== 'custom'
+        ? currentMp
+        : (prev.savedDevGuardMarketplace ?? '');
     const nextState = {
         active: true, port, upstreamServiceUrl,
-        savedGalleryServiceUrl: !isLoopbackUrl(currentGallery) ? currentGallery : (prev.savedGalleryServiceUrl ?? ''),
-        savedDevGuardMarketplace: !isLoopbackUrl(currentMp) && currentMp !== 'custom' ? currentMp : (prev.savedDevGuardMarketplace ?? '')
+        savedGalleryServiceUrl,
+        savedDevGuardMarketplace
     };
     await saveProxyState(context, nextState);
     writeUninstallRestoreManifest(context, vscodeApi, nextState);
