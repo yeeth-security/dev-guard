@@ -137,9 +137,10 @@ test('renderPane escapes untrusted text and shows all sections and controls', ()
     assert.ok(html.includes('Default · Cursor<'), 'marketplace dropdown shows the detected registry');
     assert.match(html, /id="marketplaceUrl" class="input is-hidden"/, 'URL box hidden in default mode');
     assert.ok(html.includes('1 threat removed'), 'verdict reflects the latest run');
-    for (const title of ['Setup', 'Scan log', 'Removed', 'Audit log', 'Inventory', 'Marketplace', 'Mode', 'Feed']) {
+    for (const title of ['Setup', 'Scan log', 'Removed', 'Audit log', 'Inventory', 'Marketplace', 'Marketplace proxy', 'Mode', 'Feed']) {
         assert.ok(html.includes(title), `missing section ${title}`);
     }
+    assert.match(html, /id="proxy" class="switch__input" type="checkbox" role="switch" aria-checked="true" checked/, 'marketplace proxy renders as a checked switch');
     assert.match(html, /<option value="manual" selected>Manual</, 'mode dropdown selects the active mode');
     assert.ok(!html.includes('<script>evil</script>'), 'extension id must be escaped');
     assert.ok(html.includes(esc('<script>evil</script>')));

@@ -108,3 +108,29 @@ test('audit log caps at MAX_AUDIT entries by default and honours devGuard.histor
     for (let i = 0; i < 15; i++) small.record({ type: 'mode', detail: String(i), at: i });
     assert.equal(small.list().length, 10);
 });
+
+test('audit log syncs blocked marketplace entries across multiple windows via globalStorageUri and deduplicates rapid blocks', () => {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devguard-audit-'));
+    try {
+        const ctxWindow1 = { ...fakeContext(), globalStorageUri: { fsPath: tmpDir } };
+        const ctxWindow2 = { ...fakeContext(), globalStorageUri: { fsPath: tmpDir } };
+        const log1 = createAuditLog(ctxWindow1);
+        const log2 = createAuditLog(ctxWindow2);
+
+        // Window 1 (proxy owner) records a blocked download twice within 1 second (manifest + VSIX).
+        log1.record({ at: 1000, type: 'blocked', id: 'AckeeBlockchain.tools-for-solidity', version: '1.19.4', detail: 'high · Flagged as malicious by guarddog' });
+        log1.record({ at: 1500, type: 'blocked', id: 'AckeeBlockchain.tools-for-solidity', version: '1.19.4', detail: 'high · Flagged as malicious by guarddog' });
+
+        // Rapid duplicate is collapsed to 1 entry, and Window 2 sees it immediately via shared storage.
+        assert.equal(log1.list().length, 1);
+        assert.equal(log2.list().length, 1);
+        assert.equal(log2.list()[0].type, 'blocked');
+        assert.equal(log2.list()[0].id, 'ackeeblockchain.tools-for-solidity');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+

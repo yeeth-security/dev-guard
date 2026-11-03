@@ -17,7 +17,7 @@
 const { PANE_CSS } = require('./paneStyles');
 const { PANE_SCRIPT } = require('./paneScript');
 const { esc, fmtClock, fmtNum, registryLabel, registryShort, ringSvg, computeVerdict } = require('./paneFormat');
-const { section, renderRuns, renderRemoved, renderAudit, renderInventory } = require('./paneSections');
+const { section, renderRuns, renderRemoved, renderHealthCheck, renderAudit, renderInventory } = require('./paneSections');
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 
 // Small inline icons (pkgscan buttons carry a leading icon). Stroke uses currentColor.
@@ -84,7 +84,7 @@ function renderMarketplace(s) {
 }
 
 /** Setup card: stacked label-over-control blocks (works at any width). */
-function renderSetup(s, lastRun) {
+function renderSetup(s, lastRun, hardening = []) {
     const mode = s.removalMode || 'auto';
     const modeOptions = MODES.map(([value, label]) => `<option value="${value}" ${mode === value ? 'selected' : ''}>${label}</option>`).join('');
     const modeHint = (MODES.find(([value]) => value === mode) || MODES[0])[2];
@@ -92,28 +92,30 @@ function renderSetup(s, lastRun) {
     const sync = s.failureCount
         ? `${esc(s.failureCount)} failed poll(s) · backing off`
         : `synced ${fmtClock(s.lastSyncAt)} · every 5 min`;
+    // Mode sits above the Health check, and Marketplace proxy lives inside the Health check list.
     return `
       ${renderMarketplace(s)}
       <div class="field"><label class="field__label" for="mode">Mode</label>
         <select id="mode" class="select">${modeOptions}</select>
         <div class="hint">${modeHint}</div></div>
       <div class="field"><div class="field__label">Feed</div>
-        <div class="field__value">${feed}</div><div class="hint">${sync}</div></div>`;
+        <div class="field__value">${feed}</div><div class="hint">${sync}</div></div>
+      ${renderHealthCheck(hardening, s)}`;
 }
 
 /**
  * Renders every dynamic fragment of the pane, keyed by the DOM id it belongs
  * in. Used for both the initial page and incremental updates, so the two can
  * never drift apart.
- * @param {{status: any, runs: any[], inventory: any, removed: any[], audit: any[], allowlist: string[], scanning?: boolean}} data
+ * @param {{status: any, runs: any[], inventory: any, removed: any[], audit: any[], allowlist: string[], hardening?: any[], scanning?: boolean}} data
  */
-function renderParts({ status, runs = [], inventory, removed = [], audit = [], allowlist = [], scanning = false }) {
+function renderParts({ status, runs = [], inventory, removed = [], audit = [], allowlist = [], hardening = [], scanning = false }) {
     const s = status || {};
     const invCount = inventory && Array.isArray(inventory.rows) ? inventory.rows.length : 0;
     return {
         hero: renderHero(computeVerdict({ status: s, runs, scanning })),
         actions: renderActions(scanning),
-        setup: renderSetup(s, runs[0]),
+        setup: renderSetup(s, runs[0], hardening),
         runs: renderRuns(runs), 'count-runs': fmtNum(runs.length),
         removed: renderRemoved(removed), 'count-removed': fmtNum(removed.length),
         audit: renderAudit(audit, allowlist), 'count-audit': fmtNum(audit.length),
@@ -137,7 +139,7 @@ ${renderHeader()}
 ${section('setup', 'Setup', null, p.setup)}
 ${section('runs', 'Scan log', p['count-runs'], p.runs)}
 ${section('removed', 'Removed', p['count-removed'], p.removed)}
-${section('audit', 'Audit log', p['count-audit'], p.audit, false)}
+${section('audit', 'Audit log', p['count-audit'], p.audit)}
 ${section('inventory', 'Inventory', p['count-inventory'], p.inventory, false)}
 <script nonce="${data.nonce}">${PANE_SCRIPT}</script></body></html>`;
 }

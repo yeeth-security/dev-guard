@@ -7,7 +7,7 @@
         "url": "https://github.com/yeeth-security/dev-guard/issues"
     },
     "homepage": "https://yeeth.xyz/",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "publisher": "yeeth",
     "author": "v0ldemort5545-unsafe_call",
     "icon": "icons/icon128.png",
@@ -18,7 +18,7 @@
         "Other"
     ],
     "activationEvents": [
-        "onStartupFinished"
+        "*"
     ],
     "main": "./extension.js",
     "contributes": {
@@ -30,6 +30,10 @@
             {
                 "command": "devGuard.showPanel",
                 "title": "Dev-Guard: Show Panel"
+            },
+            {
+                "command": "devGuard.toggleProxy",
+                "title": "Dev-Guard: Toggle Local Marketplace Proxy"
             },
             {
                 "command": "extension-security-auditor.checkExtensions",
@@ -82,6 +86,11 @@
                     "default": "",
                     "markdownDescription": "Marketplace gallery URL to match advisories against. Leave **empty** to detect it from the editor's `product.json` (default). Enter a custom URL such as `https://open-vsx.org/vscode/gallery` if your editor uses a different gallery. Known hosts map to VS Code Marketplace, Cursor Marketplace, or Open VSX; unknown hosts are checked against every marketplace. Sideloaded `.vsix` extensions are always checked against every marketplace."
                 },
+                "devGuard.proxy.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Run a lightweight local marketplace proxy on 127.0.0.1 that injects pkgscan.dev scan summaries at the top of extension READMEs and blocks downloads of extensions with security advisories. Updates the configured marketplace to the local proxy when enabled and restores your previous marketplace when turned off."
+                },
                 "devGuard.allowlist": {
                     "type": "array",
                     "items": {
@@ -105,6 +114,7 @@
         "typescript": "^5.0.0"
     },
     "scripts": {
+        "vscode:uninstall": "node scripts/uninstall.js",
         "test": "node --test test/*.test.js",
         "sync-badge": "node scripts/sync-badge.js"
     }

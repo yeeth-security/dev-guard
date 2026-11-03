@@ -101,6 +101,7 @@ function createAdvisoryMonitor(options) {
             pollTimer = null;
             void executeCycle('poll');
         }, delayMs);
+        if (typeof pollTimer?.unref === 'function') pollTimer.unref();
     }
 
     /**
@@ -160,6 +161,7 @@ function createAdvisoryMonitor(options) {
             pollTimer = null;
             void executeCycle('startup');
         }, initialDelay);
+        if (typeof pollTimer?.unref === 'function') pollTimer.unref();
 
         if (vscodeApi && vscodeApi.extensions && typeof vscodeApi.extensions.onDidChange === 'function') {
             disposables.push(vscodeApi.extensions.onDidChange(() => {
@@ -173,6 +175,7 @@ function createAdvisoryMonitor(options) {
                     if (lastCompletedAt > 0 && (now() - lastCompletedAt) < CHANGE_DEBOUNCE_MS) return;
                     void executeCycle('change');
                 }, CHANGE_DEBOUNCE_MS);
+                if (typeof changeTimer?.unref === 'function') changeTimer.unref();
             }));
         }
 

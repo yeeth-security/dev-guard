@@ -94,7 +94,7 @@ function saveLedger(context, ledger) {
 /**
  * Shows a one-time disclosure when `devGuard.removalMode` is `auto`.
  */
-function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'auto') {
+function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'auto', telemetry) {
     if (removalMode !== 'auto' || !context || !context.globalState || !vscodeApi) return;
     try {
         if (context.globalState.get(AUTO_DISCLOSURE_KEY)) return;
@@ -109,6 +109,7 @@ function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'auto') {
         if (choice === 'Change to Manual' && vscodeApi.workspace) {
             const target = vscodeApi.ConfigurationTarget ? vscodeApi.ConfigurationTarget.Global : true;
             void vscodeApi.workspace.getConfiguration('devGuard').update('removalMode', 'manual', target);
+            telemetry?.record('mode_changed', { mode: 'manual', from: 'auto_disclosure' });
         }
     });
 }
@@ -202,9 +203,16 @@ async function handleAuditFindings({ context, vscodeApi, findings, trigger, remo
                 + 'It will be removed again if reinstalled unless you add it to devGuard.allowlist.',
                 ...buttons
             ).then(sel => {
-                if (sel === 'Reload Window') vscodeApi.commands.executeCommand('workbench.action.reloadWindow');
-                else if (sel === GUIDE_BUTTON) openRemovalGuide(vscodeApi, telemetry, 'auto_toast');
-                else if (sel === 'View Report' && firstReportUrl) vscodeApi.env.openExternal(vscodeApi.Uri.parse(firstReportUrl));
+                if (sel === 'Reload Window') {
+                    telemetry?.record('reload_clicked', { from: 'auto_toast' });
+                    vscodeApi.commands.executeCommand('workbench.action.reloadWindow');
+                } else if (sel === GUIDE_BUTTON) {
+                    openRemovalGuide(vscodeApi, telemetry, 'auto_toast');
+                } else if (sel === 'View Report' && firstReportUrl) {
+                    vscodeApi.env.openExternal(vscodeApi.Uri.parse(firstReportUrl));
+                    telemetry?.record('report_viewed', { extension_id: removed[0].extension.id, severity: removed[0].advisory.severity || 'unknown' });
+                    telemetry?.record('pkgscan_opened', { source: 'auto_toast', extension_id: removed[0].extension.id });
+                }
             });
         }
         // Failed uninstalls fall back to a prompt, but only once per
@@ -229,13 +237,20 @@ async function handleAuditFindings({ context, vscodeApi, findings, trigger, remo
                         'Security audit completed. Reload the window to finish uninstalling extensions.',
                         'Reload Window', GUIDE_BUTTON
                     ).then(r => {
-                        if (r === 'Reload Window') vscodeApi.commands.executeCommand('workbench.action.reloadWindow');
-                        else if (r === GUIDE_BUTTON) openRemovalGuide(vscodeApi, telemetry, 'manual_toast');
+                        if (r === 'Reload Window') {
+                            telemetry?.record('reload_clicked', { from: 'manual_toast' });
+                            vscodeApi.commands.executeCommand('workbench.action.reloadWindow');
+                        } else if (r === GUIDE_BUTTON) {
+                            openRemovalGuide(vscodeApi, telemetry, 'manual_toast');
+                        }
                     });
                 }
             } else if (sel === 'View Report' && firstReportUrl) {
                 vscodeApi.env.openExternal(vscodeApi.Uri.parse(firstReportUrl));
                 telemetry?.record('report_viewed', { extension_id: promptList[0].extension.id, severity: promptList[0].advisory.severity || 'unknown' });
+                telemetry?.record('pkgscan_opened', { source: 'manual_toast', extension_id: promptList[0].extension.id });
+            } else {
+                telemetry?.record('manual_uninstall_refused', { extension_id: promptList[0].extension.id, count: promptList.length });
             }
         });
     } else if (promptList.length > 0 && removalMode === 'warn') {
@@ -243,7 +258,11 @@ async function handleAuditFindings({ context, vscodeApi, findings, trigger, remo
         saveLedger(context, ledger);
         const buttons = firstReportUrl ? ['View Report'] : [];
         vscodeApi.window.showWarningMessage(`Malicious extension(s) flagged by pkgscan.dev: ${names}`, ...buttons).then(sel => {
-            if (sel === 'View Report' && firstReportUrl) vscodeApi.env.openExternal(vscodeApi.Uri.parse(firstReportUrl));
+            if (sel === 'View Report' && firstReportUrl) {
+                vscodeApi.env.openExternal(vscodeApi.Uri.parse(firstReportUrl));
+                telemetry?.record('report_viewed', { extension_id: promptList[0].extension.id, severity: promptList[0].advisory.severity || 'unknown' });
+                telemetry?.record('pkgscan_opened', { source: 'warn_toast', extension_id: promptList[0].extension.id });
+            }
         });
     }
 
