@@ -31,6 +31,17 @@ const {
 } = require('../proxy/uninstall');
 const { createProxyController } = require('../proxy');
 const { createAuditLog } = require('../audit');
+const { signAssetBase, computeHandshakeMac, decodeAndVerifyAssetBase, isAllowedAssetBaseUrl } = require('../proxy/security');
+
+// Fixed secret for tests that build `/asset/` URLs by hand.
+// The proxy rejects unsigned asset URLs, so tests must sign them like the proxy does.
+const TEST_SECRET = '1'.repeat(64);
+
+/** Builds a signed `/asset/<sig>.<base>/<publisher>/<name>/<version>/<platform>` path segment. */
+function signedAssetPath(decodedBase, publisher, name, version, platform = 'universal', secret = TEST_SECRET) {
+    const enc = signAssetBase(secret, { decodedBase, publisher, name, version, platform });
+    return `${enc}/${publisher}/${name}/${version}/${platform}`;
+}
 
 function createFakeEnv(initialSettings = {}) {
     const store = new Map();
@@ -205,6 +216,7 @@ test('proxy rewrites extensionquery, injects scan data into README, and blocks f
     }];
 
     const proxy = createMarketplaceProxy({
+        allowLoopbackAssets: true,
         getUpstream: () => ({ serviceUrl: `${mockUpstream.url}/_apis/public/gallery`, registry: 'openvsx' }),
         getAdvisories: () => advisories,
         isAllowlisted: id => allowlist.has(id.toLowerCase()),
@@ -361,6 +373,7 @@ test('install of extension flagged by pkgscan engine verdict is blocked at manif
 
     let blockedInfo = null;
     const proxy = createMarketplaceProxy({
+        secret: TEST_SECRET,
         getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
         getAdvisories: () => [],
         isAllowlisted: id => (settings['devGuard.allowlist'] || []).includes(id.toLowerCase()),
@@ -382,8 +395,8 @@ test('install of extension flagged by pkgscan engine verdict is blocked at manif
 
     const port = await proxy.start(0);
     try {
-        const encBase = Buffer.from('https://marketplace.cursorapi.com/open-vsx-mirror/vscode/asset/AckeeBlockchain/tools-for-solidity/1.19.4', 'utf8').toString('base64url');
-        const assetBase = `http://127.0.0.1:${port}/asset/${encBase}/AckeeBlockchain/tools-for-solidity/1.19.4/universal`;
+        const assetPath = signedAssetPath('https://marketplace.cursorapi.com/open-vsx-mirror/vscode/asset/AckeeBlockchain/tools-for-solidity/1.19.4', 'AckeeBlockchain', 'tools-for-solidity', '1.19.4');
+        const assetBase = `http://127.0.0.1:${port}/asset/${assetPath}`;
 
         // 1. Install-time Manifest fetch (no Origin header, from sharedProcess) returns blocked manifest
         // with version `0.0.0-blocked-by-dev-guard` so VS Code aborts without opening a second modal popup.
@@ -478,6 +491,8 @@ test('Open VSX and Cursor open-vsx-mirror extensions use ?repository_url=https:/
     });
 
     const proxy = createMarketplaceProxy({
+        secret: TEST_SECRET,
+        allowLoopbackAssets: true,
         getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
         getAdvisories: () => [],
         pkgscanBaseUrl: mockPkgscan.url
@@ -485,8 +500,8 @@ test('Open VSX and Cursor open-vsx-mirror extensions use ?repository_url=https:/
 
     const port = await proxy.start(0);
     try {
-        const encBase = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/TintinWeb/solidity-visual-auditor/0.2.3`, 'utf8').toString('base64url');
-        const readmeRes = await fetch(`http://127.0.0.1:${port}/asset/${encBase}/TintinWeb/solidity-visual-auditor/0.2.3/universal/${ASSET_README}`);
+        const assetPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/TintinWeb/solidity-visual-auditor/0.2.3`, 'TintinWeb', 'solidity-visual-auditor', '0.2.3');
+        const readmeRes = await fetch(`http://127.0.0.1:${port}/asset/${assetPath}/${ASSET_README}`);
         const readmeText = await readmeRes.text();
 
         // Every pkgscan API request must carry ?repository_url=https%3A%2F%2Fopen-vsx.org
@@ -528,6 +543,8 @@ test('viewing an unscanned extension README does not cache unscanned status, so 
 
     const blocked = [];
     const proxy = createMarketplaceProxy({
+        secret: TEST_SECRET,
+        allowLoopbackAssets: true,
         getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
         getAdvisories: () => [],
         onBlockedDownload: info => blocked.push(info),
@@ -536,8 +553,8 @@ test('viewing an unscanned extension README does not cache unscanned status, so 
 
     const port = await proxy.start(0);
     try {
-        const encBase = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/AckeeBlockchain/tools-for-solidity/1.19.4`, 'utf8').toString('base64url');
-        const assetBase = `http://127.0.0.1:${port}/asset/${encBase}/AckeeBlockchain/tools-for-solidity/1.19.4/universal`;
+        const assetPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/AckeeBlockchain/tools-for-solidity/1.19.4`, 'AckeeBlockchain', 'tools-for-solidity', '1.19.4');
+        const assetBase = `http://127.0.0.1:${port}/asset/${assetPath}`;
 
         // 1. User opens the extension README while it is still `unscanned` on pkgscan.dev.
         const readme1 = await fetch(`${assetBase}/${ASSET_README}`).then(r => r.text());
@@ -582,6 +599,8 @@ test('unscanned extension install prompts user to Scan on pkgscan.dev or Continu
     let nextChoice = 'Scan on pkgscan.dev';
 
     const proxy = createMarketplaceProxy({
+        secret: TEST_SECRET,
+        allowLoopbackAssets: true,
         getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
         getAdvisories: () => [],
         onUnscannedInstall: async ({ id, version, reportUrl }) => {
@@ -600,8 +619,8 @@ test('unscanned extension install prompts user to Scan on pkgscan.dev or Continu
 
     const port = await proxy.start(0);
     try {
-        const encBase = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/acme/unscanned-ext/2.1.0`, 'utf8').toString('base64url');
-        const assetBase = `http://127.0.0.1:${port}/asset/${encBase}/acme/unscanned-ext/2.1.0/universal`;
+        const assetPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/acme/unscanned-ext/2.1.0`, 'acme', 'unscanned-ext', '2.1.0');
+        const assetBase = `http://127.0.0.1:${port}/asset/${assetPath}`;
 
         // 1. User tries to install unscanned extension and chooses "Scan on pkgscan.dev":
         //    - Opens pkgscan.dev scan URL with Open VSX repository_url
@@ -767,6 +786,7 @@ test('proxy controller records telemetry for flagged README views, blocked downl
         context,
         vscodeApi,
         preferredPort: 0,
+        allowLoopbackAssets: true,
         pkgscanBaseUrl: mockPkgscan.url,
         getAdvisories: () => [{
             id: 'adv-1',
@@ -784,8 +804,10 @@ test('proxy controller records telemetry for flagged README views, blocked downl
         const port = controller.getPort();
         assert.ok(telemetryEvents.some(e => e.name === 'proxy_status' && e.props.enabled === true && e.props.registry === 'cursor-marketplace'));
 
-        const encStealer = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/evil/stealer/1.0.0`, 'utf8').toString('base64url');
-        const stealerBase = `http://127.0.0.1:${port}/asset/${encStealer}/evil/stealer/1.0.0/universal`;
+        // The fake context has no `globalStorageUri`, so the controller's proxy keeps its secret in globalState.
+        const controllerSecret = context.globalState.get('devGuard.proxySecret');
+        const stealerPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/evil/stealer/1.0.0`, 'evil', 'stealer', '1.0.0', 'universal', controllerSecret);
+        const stealerBase = `http://127.0.0.1:${port}/asset/${stealerPath}`;
 
         // 1. Viewing a flagged README records `flagged_readme_viewed`.
         await fetch(`${stealerBase}/${ASSET_README}`);
@@ -818,8 +840,8 @@ test('proxy controller records telemetry for flagged README views, blocked downl
         ));
 
         // 3. Attempting to install an unscanned extension and choosing "Scan on pkgscan.dev" records `unscanned_install_decision` (`refused_install: true`) and `pkgscan_opened`.
-        const encUnscanned = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/acme/unscanned-ext/2.0.0`, 'utf8').toString('base64url');
-        const unscannedBase = `http://127.0.0.1:${port}/asset/${encUnscanned}/acme/unscanned-ext/2.0.0/universal`;
+        const unscannedPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/acme/unscanned-ext/2.0.0`, 'acme', 'unscanned-ext', '2.0.0', 'universal', controllerSecret);
+        const unscannedBase = `http://127.0.0.1:${port}/asset/${unscannedPath}`;
         nextModalSelection = 'Scan on pkgscan.dev';
         await fetch(`${unscannedBase}/${ASSET_MANIFEST}`);
         assert.ok(telemetryEvents.some(e =>
@@ -978,6 +1000,139 @@ test('proxy server unrefs listening socket and closes keep-alive connections imm
     assert.equal(exitCode, 0);
 });
 
+test('peer verification never leaks the secret and rejects squatters that relay the challenge to a real proxy', async () => {
+    // 1. A "smart" squatter: it reads any `x-devguard-token` we send and uses it
+    //    to answer the challenge. This passed before the fix, because the secret
+    //    was sent along with the challenge.
+    let stolenToken;
+    const smartSquatter = await startMockServer((req, res) => {
+        stolenToken = req.headers['x-devguard-token'];
+        const nonce = new URL(req.url, 'http://x').searchParams.get('nonce') || '';
+        const port = req.socket.localPort;
+        const mac = stolenToken ? computeHandshakeMac(stolenToken, nonce, port) : 'no-secret';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ mac }));
+    });
+    const smartPort = Number(new URL(smartSquatter.url).port);
+
+    // 2. A "relay" squatter: it forwards our challenge to a REAL Dev-Guard proxy
+    //    (same secret, different port) and returns that proxy's valid answer.
+    const realProxy = createMarketplaceProxy({ secret: TEST_SECRET, getUpstream: () => ({ serviceUrl: '' }), getAdvisories: () => [] });
+    const realPort = await realProxy.start(0);
+    const relaySquatter = await startMockServer(async (req, res) => {
+        const relayed = await fetch(`http://127.0.0.1:${realPort}${req.url}`).then(r => r.text()).catch(() => '{}');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(relayed);
+    });
+    const relayPort = Number(new URL(relaySquatter.url).port);
+
+    const victim1 = createMarketplaceProxy({ secret: TEST_SECRET, getUpstream: () => ({ serviceUrl: '' }), getAdvisories: () => [] });
+    const victim2 = createMarketplaceProxy({ secret: TEST_SECRET, getUpstream: () => ({ serviceUrl: '' }), getAdvisories: () => [] });
+    try {
+        const bound1 = await victim1.start(smartPort);
+        assert.equal(stolenToken, undefined, 'the challenge request must never carry the secret');
+        assert.notEqual(bound1, smartPort, 'must not trust a squatter that cannot prove the secret');
+
+        const bound2 = await victim2.start(relayPort);
+        assert.notEqual(bound2, relayPort, 'a relayed answer is bound to the real proxy port, so it must fail');
+    } finally {
+        await victim1.stop();
+        await victim2.stop();
+        await realProxy.stop();
+        await smartSquatter.close();
+        await relaySquatter.close();
+    }
+});
+
+test('HTTP peer decisions require the one-time decisionToken and work from Node fetch', async () => {
+    const mockPkgscan = await startMockServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'unscanned' }));
+    });
+    const mockUpstream = await startMockServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end('UNSCANNED-VSIX');
+    });
+    // `defer` = this window doesn't decide; it waits for a peer window to POST the decision.
+    const proxy = createMarketplaceProxy({
+        secret: TEST_SECRET,
+        allowLoopbackAssets: true,
+        getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
+        getAdvisories: () => [],
+        onUnscannedInstall: async () => 'defer',
+        pkgscanBaseUrl: mockPkgscan.url
+    });
+    const port = await proxy.start(0);
+
+    // Listen on the peer event stream (like a second window would) to learn the decisionToken.
+    let unscannedEvent = null;
+    const streamReq = http.get({
+        hostname: '127.0.0.1', port, path: '/_devguard/events', headers: { 'x-devguard-token': TEST_SECRET }
+    }, res => {
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+            for (const line of chunk.split('\n')) {
+                if (!line.trim()) continue;
+                const msg = JSON.parse(line);
+                if (msg.event === 'unscanned') unscannedEvent = msg;
+            }
+        });
+    });
+    streamReq.on('error', () => {});
+
+    const postDecision = body => fetch(`http://127.0.0.1:${port}/_devguard/decision`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-devguard-token': TEST_SECRET },
+        body: JSON.stringify(body)
+    });
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    try {
+        await sleep(30);
+        const assetPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/acme/peer-ext/1.0.0`, 'acme', 'peer-ext', '1.0.0');
+        let settled = false;
+        const vsixPromise = fetch(`http://127.0.0.1:${port}/asset/${assetPath}/${ASSET_VSIX}`)
+            .then(r => { settled = true; return r; });
+
+        for (let i = 0; i < 50 && !unscannedEvent; i++) await sleep(10);
+        assert.ok(unscannedEvent && unscannedEvent.decisionToken, 'peer stream receives the unscanned prompt with a token');
+        const key = unscannedEvent.key;
+
+        // Missing or wrong token: request is accepted but the decision is ignored.
+        assert.equal((await postDecision({ key, decision: 'continue' })).status, 200);
+        assert.equal((await postDecision({ key, decision: 'continue', decisionToken: 'f'.repeat(32) })).status, 200);
+        await sleep(30);
+        assert.equal(settled, false, 'decision without the right token must not approve the install');
+
+        // Correct token, sent with Node fetch (which adds `sec-fetch-mode: cors`), resolves the prompt.
+        await postDecision({ key, decision: 'continue', decisionToken: unscannedEvent.decisionToken });
+        const vsixRes = await vsixPromise;
+        assert.equal(vsixRes.status, 200);
+        assert.equal(await vsixRes.text(), 'UNSCANNED-VSIX');
+    } finally {
+        streamReq.destroy();
+        await proxy.stop();
+        await mockUpstream.close();
+        await mockPkgscan.close();
+    }
+});
+
+test('asset URLs must be signed, loopback asset hosts are refused by default, and publisher/name must match whole path segments', () => {
+    const base = 'https://open-vsx.org/vscode/asset/good/clean-ext/1.0.0';
+    const signed = signAssetBase(TEST_SECRET, { decodedBase: base, publisher: 'good', name: 'clean-ext', version: '1.0.0', platform: 'universal' });
+    const opts = { secret: TEST_SECRET, publisher: 'good', name: 'clean-ext', version: '1.0.0', platform: 'universal', proxyOrigin: 'http://127.0.0.1:1' };
+
+    assert.equal(decodeAndVerifyAssetBase(signed, opts), base, 'valid signature is accepted');
+    const unsigned = Buffer.from(base, 'utf8').toString('base64url');
+    assert.equal(decodeAndVerifyAssetBase(unsigned, opts), null, 'unsigned (legacy) asset base is rejected');
+    assert.equal(decodeAndVerifyAssetBase(signed, { ...opts, version: '2.0.0' }), null, 'signature is bound to the version');
+
+    assert.equal(isAllowedAssetBaseUrl('http://127.0.0.1:6379/x/good/clean-ext', { publisher: 'good', name: 'clean-ext' }), false, 'loopback refused by default');
+    assert.equal(isAllowedAssetBaseUrl('http://127.0.0.1:6379/x/good/clean-ext', { publisher: 'good', name: 'clean-ext', allowLoopback: true }), true);
+    assert.equal(isAllowedAssetBaseUrl('https://open-vsx.org/vscode/asset/good/clean-ext-evil/1.0.0', { publisher: 'good', name: 'clean-ext' }), false, 'partial name must not match');
+    assert.equal(isAllowedAssetBaseUrl('https://open-vsx.org/vscode/asset/good/clean-ext/1.0.0', { publisher: 'good', name: 'clean-ext' }), true);
+});
+
 test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF, and tampered VSIX binaries', async () => {
     const rogueSquatter = await startMockServer((_req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -1007,7 +1162,8 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
 
     const blocked = [];
     const proxy = createMarketplaceProxy({
-        secret: '1'.repeat(64),
+        secret: TEST_SECRET,
+        allowLoopbackAssets: true,
         getUpstream: () => ({ serviceUrl: 'https://marketplace.cursorapi.com/_apis/public/gallery', registry: 'cursor-marketplace' }),
         getAdvisories: () => [],
         onBlockedDownload: info => blocked.push(info),
@@ -1026,6 +1182,15 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
         });
         assert.equal(badOriginRes.status, 403);
 
+        // 2b. Browser "simple" loads (like `<img src>`) carry no Origin but do send
+        //     `sec-fetch-site: cross-site`. They must not reach `/asset/` and trigger IDE prompts.
+        const imgLikePath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'good', 'clean-ext', '1.0.0');
+        const crossSiteRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${imgLikePath}/${ASSET_VSIX}`, {
+            headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' }
+        });
+        assert.equal(crossSiteRes.status, 403, 'cross-site browser request without Origin must be rejected');
+        assert.equal(blocked.length, 0);
+
         // 3. Internal control endpoints (`/_devguard/*`) reject unauthenticated local calls:
         const unauthEvents = await fetch(`http://127.0.0.1:${boundPort}/_devguard/events`);
         assert.equal(unauthEvents.status, 403);
@@ -1037,17 +1202,23 @@ test('security hardening blocks port squatters, browser CSRF/DNS rebinding, SSRF
         assert.equal(unauthDecision.status, 403);
 
         // 4. SSRF & Publisher/Asset mismatch protection on `/asset/`:
-        const ssrfEnc = Buffer.from('https://evil.example.com/extensions/good/ext/1.0.0', 'utf8').toString('base64url');
-        const ssrfRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${ssrfEnc}/good/ext/1.0.0/universal/${ASSET_README}`);
+        //    Unsigned URLs are rejected outright, even when they point at an allowed host.
+        const unsignedEnc = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'utf8').toString('base64url');
+        const unsignedRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${unsignedEnc}/good/clean-ext/1.0.0/universal/${ASSET_README}`);
+        assert.equal(unsignedRes.status, 403, 'unsigned asset base must be rejected');
+
+        //    Even a correctly signed URL is rejected when its host is not a trusted gallery CDN.
+        const ssrfPath = signedAssetPath('https://evil.example.com/extensions/good/ext/1.0.0', 'good', 'ext', '1.0.0');
+        const ssrfRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${ssrfPath}/${ASSET_README}`);
         assert.equal(ssrfRes.status, 403, 'untrusted asset host must be rejected');
 
-        const mismatchEnc = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/evil/other-ext/1.0.0`, 'utf8').toString('base64url');
-        const mismatchRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${mismatchEnc}/good/clean-ext/1.0.0/universal/${ASSET_README}`);
+        const mismatchPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/evil/other-ext/1.0.0`, 'good', 'clean-ext', '1.0.0');
+        const mismatchRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${mismatchPath}/${ASSET_README}`);
         assert.equal(mismatchRes.status, 403, 'mismatched publisher/name in asset base URL must be rejected');
 
         // 5. VSIX SHA-256 verification blocks a tampered upstream binary whose digest does not match pkgscan.dev:
-        const validEnc = Buffer.from(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'utf8').toString('base64url');
-        const vsixRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${validEnc}/good/clean-ext/1.0.0/universal/${ASSET_VSIX}`);
+        const validPath = signedAssetPath(`${mockUpstream.url}/open-vsx-mirror/vscode/asset/good/clean-ext/1.0.0`, 'good', 'clean-ext', '1.0.0');
+        const vsixRes = await fetch(`http://127.0.0.1:${boundPort}/asset/${validPath}/${ASSET_VSIX}`);
         assert.equal(vsixRes.status, 403, 'VSIX with mismatched SHA-256 must be blocked');
         assert.equal(blocked.length, 1);
         assert.equal(blocked[0].blockSource, 'sha256_mismatch');

@@ -69,24 +69,33 @@ function safeEqual(a, b) {
     }
 }
 
-/** Computes the HMAC-SHA256 peer verification tag for a challenge nonce. */
-function computeHandshakeMac(secret, nonce) {
-    return crypto.createHmac('sha256', String(secret)).update(`devguard-peer:${nonce}`).digest('hex');
+/**
+ * Computes the HMAC-SHA256 peer verification tag for a challenge nonce.
+ *
+ * The tag also covers the port of the server that answers. Without it, a
+ * squatter could forward our challenge to a real Dev-Guard proxy on another
+ * port (for example our ephemeral fallback) and replay its valid answer.
+ */
+function computeHandshakeMac(secret, nonce, port) {
+    return crypto.createHmac('sha256', String(secret)).update(`devguard-peer:${port}:${nonce}`).digest('hex');
 }
 
 /**
  * Verifies that an existing listener on `port` is a genuine Dev-Guard proxy
  * holding the same `secret`. Prevents port-squatting replacement attacks.
+ *
+ * IMPORTANT: this request must NEVER carry the secret (`x-devguard-token`).
+ * We don't trust the listener yet. A squatter would read the header and then
+ * use the secret to answer the challenge correctly.
  */
 function verifyPeerServer(port, secret, timeoutMs = 1200) {
     const nonce = crypto.randomBytes(16).toString('hex');
-    const expectedMac = computeHandshakeMac(secret, nonce);
+    const expectedMac = computeHandshakeMac(secret, nonce, port);
     return new Promise(resolve => {
         const req = http.get({
             hostname: '127.0.0.1',
             port,
             path: `/_devguard/verify?nonce=${nonce}`,
-            headers: { 'x-devguard-token': secret },
             timeout: timeoutMs
         }, res => {
             if (res.statusCode !== 200) { res.resume(); resolve(false); return; }
@@ -114,16 +123,38 @@ function isAllowedHost(req) {
 
 /** Rejects cross-origin requests from regular web browsers (`http:` / `https:` origins). */
 function isAllowedOrigin(req) {
-    const origin = req && req.headers && req.headers.origin;
-    if (!origin) return true;
-    const lower = String(origin).trim().toLowerCase();
-    return lower.startsWith('vscode-file://') || lower.startsWith('vscode-webview://');
+    const headers = (req && req.headers) || {};
+    const origin = headers.origin;
+    if (origin) {
+        const lower = String(origin).trim().toLowerCase();
+        return lower.startsWith('vscode-file://') || lower.startsWith('vscode-webview://');
+    }
+    // Browsers leave out the Origin header on simple loads like `<img src>` or
+    // link clicks, but they still send `sec-fetch-site`. Without this check,
+    // any web page could hit `/asset/.../VSIXPackage` and spam the user with
+    // "Not scanned, continue?" prompts in the IDE.
+    // Node-based downloads (VS Code's shared process, Node `fetch`) never
+    // send `sec-fetch-site`, so they are not affected.
+    const site = String(headers['sec-fetch-site'] || '').trim().toLowerCase();
+    return site !== 'cross-site' && site !== 'same-site';
+}
+
+/**
+ * Detects requests that come from a web browser or webview.
+ *
+ * Browsers always send `Origin` or `sec-fetch-site` here. We do NOT look at
+ * `sec-fetch-mode`: Node's own `fetch` (undici) sends `sec-fetch-mode: cors`,
+ * so checking it would reject our own peer requests.
+ */
+function isBrowserRequest(req) {
+    const headers = (req && req.headers) || {};
+    return Boolean(headers.origin || headers['sec-fetch-site']);
 }
 
 /** Ensures `/_devguard/*` control endpoints are only called by authenticated Node peers, never browsers. */
 function isInternalPeerAuthorized(req, secret) {
     if (!req || !req.headers) return false;
-    if (req.headers.origin || req.headers['sec-fetch-site'] || req.headers['sec-fetch-mode']) return false;
+    if (isBrowserRequest(req)) return false;
     const token = String(req.headers['x-devguard-token'] || '');
     return safeEqual(token, String(secret));
 }
@@ -137,32 +168,49 @@ function signAssetBase(secret, { decodedBase, publisher, name, version, platform
     return `${mac}.${enc}`;
 }
 
-/** Decodes `encBase` (supporting both signed `<mac>.<base64url>` and legacy `<base64url>`) and validates its host/path. */
-function decodeAndVerifyAssetBase(encBase, { secret, publisher, name, version, platform, upstreamServiceUrl, proxyOrigin }) {
+/**
+ * Decodes a signed `<mac>.<base64url>` asset base and validates its host/path.
+ *
+ * Every asset URL must carry a valid signature. Unsigned URLs (the old
+ * `<base64url>` format) are rejected. Otherwise anyone could point `/asset/`
+ * at a URL our proxy never handed out, and signing would protect nothing.
+ */
+function decodeAndVerifyAssetBase(encBase, { secret, publisher, name, version, platform, upstreamServiceUrl, proxyOrigin, allowLoopback = false }) {
     const raw = String(encBase || '');
     const dot = raw.indexOf('.');
-    let b64 = raw;
-    let sig = null;
-    if (dot > 0) {
-        sig = raw.slice(0, dot);
-        b64 = raw.slice(dot + 1);
-    }
+    if (dot <= 0) return null;
+    const b64 = raw.slice(dot + 1);
     let decodedBase = '';
     try { decodedBase = Buffer.from(b64, 'base64url').toString('utf8').replace(/\/+$/, ''); }
     catch (_e) { return null; }
     if (!decodedBase || decodedBase.startsWith(proxyOrigin)) return null;
 
-    if (sig !== null) {
-        const expected = signAssetBase(secret, { decodedBase, publisher, name, version, platform });
-        if (!safeEqual(raw, expected)) return null;
-    }
+    const expected = signAssetBase(secret, { decodedBase, publisher, name, version, platform });
+    if (!safeEqual(raw, expected)) return null;
 
-    if (!isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, name })) return null;
+    if (!isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, name, allowLoopback })) return null;
     return decodedBase;
 }
 
-/** Validates that `decodedBase` points to a trusted gallery CDN and matches `publisher/name`. */
-function isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, name } = {}) {
+/** Checks that `publisher` and `name` appear as two whole path segments, one right after the other. */
+function hasPublisherNamePath(pathname, publisher, name) {
+    let segments;
+    try { segments = String(pathname).split('/').map(s => decodeURIComponent(s).toLowerCase()); }
+    catch (_e) { return false; }
+    const pub = String(publisher).toLowerCase();
+    const ext = String(name).toLowerCase();
+    // Whole segments only: `/pub/name-evil` must NOT match `pub/name`.
+    return segments.some((seg, i) => seg === pub && segments[i + 1] === ext);
+}
+
+/**
+ * Validates that `decodedBase` points to a trusted gallery CDN and matches `publisher/name`.
+ *
+ * Loopback hosts (`127.0.0.1` / `localhost`) are refused unless `allowLoopback`
+ * is set. Only tests set it, to reach local mock servers. In real use, allowing
+ * loopback would let `/asset/` reach any other local service on the machine.
+ */
+function isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, name, allowLoopback = false } = {}) {
     let parsed;
     try { parsed = new URL(decodedBase); } catch (_e) { return false; }
     const host = parsed.hostname.toLowerCase();
@@ -170,7 +218,7 @@ function isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, nam
 
     let hostAllowed = false;
     if (isLoopback) {
-        hostAllowed = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+        hostAllowed = Boolean(allowLoopback) && (parsed.protocol === 'http:' || parsed.protocol === 'https:');
     } else if (parsed.protocol === 'https:') {
         hostAllowed = TRUSTED_GALLERY_HOSTS.some(h => (h.startsWith('.') ? host.endsWith(h) : host === h));
         if (!hostAllowed && upstreamServiceUrl) {
@@ -179,11 +227,7 @@ function isAllowedAssetBaseUrl(decodedBase, { upstreamServiceUrl, publisher, nam
     }
     if (!hostAllowed) return false;
 
-    if (publisher && name) {
-        const lowerPath = decodeURIComponent(parsed.pathname).toLowerCase();
-        const expectedPair = `/${String(publisher).toLowerCase()}/${String(name).toLowerCase()}`;
-        if (!lowerPath.includes(expectedPair)) return false;
-    }
+    if (publisher && name && !hasPublisherNamePath(parsed.pathname, publisher, name)) return false;
     return true;
 }
 
@@ -202,6 +246,7 @@ module.exports = {
     verifyPeerServer,
     isAllowedHost,
     isAllowedOrigin,
+    isBrowserRequest,
     isInternalPeerAuthorized,
     signAssetBase,
     decodeAndVerifyAssetBase,

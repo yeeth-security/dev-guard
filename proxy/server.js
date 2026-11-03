@@ -23,6 +23,7 @@ const {
     verifyPeerServer,
     isAllowedHost,
     isAllowedOrigin,
+    isBrowserRequest,
     isInternalPeerAuthorized,
     signAssetBase,
     decodeAndVerifyAssetBase,
@@ -208,11 +209,19 @@ function corsHeaders(req, extra = {}) {
     };
 }
 
-function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, isAllowlisted, onBlockedDownload, onUnscannedInstall, onUnscannedDecision, onFlaggedReadmeViewed, pkgscanBaseUrl = DEFAULT_PKGSCAN_BASE_URL, fetchImpl = fetch }) {
+/**
+ * Options worth knowing:
+ *   - `allowLoopbackAssets`: TEST ONLY. Lets `/asset/` fetch from local mock servers.
+ *   - `onPortChanged(port)`: called when the proxy moves to a new port because
+ *     an unverified process took over the shared port. The caller must point
+ *     the marketplace settings at the new port.
+ */
+function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, isAllowlisted, onBlockedDownload, onUnscannedInstall, onUnscannedDecision, onFlaggedReadmeViewed, onPortChanged, allowLoopbackAssets = false, pkgscanBaseUrl = DEFAULT_PKGSCAN_BASE_URL, fetchImpl = fetch }) {
     let server = null;
     let listeningPort = null;
     let standbyTimer = null;
     let peerStreamReq = null;
+    let reconnecting = false;
     let lastBlockedUntil = 0;
     const proxySecret = secret || loadOrCreateProxySecret(context);
     const eventClients = new Set();
@@ -333,7 +342,8 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
             version,
             platform,
             upstreamServiceUrl: upstream.serviceUrl,
-            proxyOrigin
+            proxyOrigin,
+            allowLoopback: allowLoopbackAssets
         });
         if (!decodedBase) {
             res.writeHead(403, corsHeaders(req, { 'content-type': 'application/json' }));
@@ -476,16 +486,25 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
         const urlObj = new URL(req.url || '/', proxyOrigin);
         const upstream = typeof getUpstream === 'function' ? getUpstream() : { serviceUrl: '', registry: null };
 
-        if (urlObj.pathname.startsWith('/_devguard/')) {
-            if (!isInternalPeerAuthorized(req, proxySecret)) {
+        // Peer challenge. It is answered WITHOUT the secret header on purpose:
+        // callers must never send the secret to a server they haven't verified.
+        // The answer is a one-way hash tied to a random nonce and to the port
+        // this socket is bound to, so it reveals nothing reusable.
+        if (req.method === 'GET' && urlObj.pathname === '/_devguard/verify') {
+            const nonce = urlObj.searchParams.get('nonce') || '';
+            if (isBrowserRequest(req) || !/^[a-f0-9]{32}$/i.test(nonce)) {
                 res.writeHead(403, { 'content-type': 'application/json' });
                 res.end(JSON.stringify({ error: 'unauthorized_peer' }));
                 return;
             }
-            if (req.method === 'GET' && urlObj.pathname === '/_devguard/verify') {
-                const nonce = urlObj.searchParams.get('nonce') || '';
-                res.writeHead(200, { 'content-type': 'application/json' });
-                res.end(JSON.stringify({ ok: true, mac: computeHandshakeMac(proxySecret, nonce) }));
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, mac: computeHandshakeMac(proxySecret, nonce, req.socket.localPort) }));
+            return;
+        }
+        if (urlObj.pathname.startsWith('/_devguard/')) {
+            if (!isInternalPeerAuthorized(req, proxySecret)) {
+                res.writeHead(403, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'unauthorized_peer' }));
                 return;
             }
             if (req.method === 'GET' && urlObj.pathname === '/_devguard/events') {
@@ -497,7 +516,11 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
             if (req.method === 'POST' && urlObj.pathname === '/_devguard/decision') {
                 try {
                     const body = JSON.parse((await readBody(req)).toString('utf8'));
-                    if (body && body.key && body.decision) {
+                    // HTTP callers MUST send the one-time `decisionToken` for this prompt.
+                    // `resolveUnscannedDecision` skips the token check when it is
+                    // `undefined` (for calls from inside this window), so a missing token
+                    // over HTTP would otherwise bypass the check entirely.
+                    if (body && body.key && body.decision && typeof body.decisionToken === 'string') {
                         resolveUnscannedDecision(body.key, body.decision, body.decisionToken);
                     }
                 } catch (_e) { /* ignore */ }
@@ -681,6 +704,33 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
         peerStreamReq = req;
     }
 
+    /**
+     * Re-verifies the listener on `port` before reconnecting to it.
+     *
+     * The old peer window may have closed, and a different process may now
+     * hold the port. Reconnecting blindly would send our secret to it. If the
+     * new listener fails the check, we stop trusting the port, move to a fresh
+     * ephemeral port, and tell the caller so the settings follow us.
+     */
+    async function reconnectToVerifiedPeer(port) {
+        if (reconnecting || peerStreamReq || server || !listeningPort) return;
+        reconnecting = true;
+        try {
+            if (await verifyPeerServer(port, proxySecret)) {
+                connectPeerEvents(port);
+                return;
+            }
+            if (server || !listeningPort) return;
+            const { srv, port: newPort } = await listenOnPort(0);
+            clearStandby(); server = srv; listeningPort = newPort;
+            try { onPortChanged?.(newPort); } catch (_e) { /* ignore */ }
+        } catch (_e) {
+            /* try again on the next standby tick */
+        } finally {
+            reconnecting = false;
+        }
+    }
+
     return {
         async start(preferredPort = DEFAULT_PROXY_PORT) {
             if (listeningPort) return listeningPort;
@@ -706,7 +756,7 @@ function createMarketplaceProxy({ context, secret, getUpstream, getAdvisories, i
                             if (server || !listeningPort) return;
                             listenOnPort(preferredPort)
                                 .then(({ srv, port }) => { clearStandby(); server = srv; listeningPort = port; })
-                                .catch(() => connectPeerEvents(preferredPort));
+                                .catch(() => reconnectToVerifiedPeer(preferredPort));
                         }, 3000);
                         if (typeof standbyTimer.unref === 'function') standbyTimer.unref();
                     }

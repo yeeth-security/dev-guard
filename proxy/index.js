@@ -39,7 +39,7 @@ function getProxyEnabled(vscodeApi) {
 /**
  * Creates the marketplace proxy controller bound to the extension context.
  */
-function createProxyController({ context, vscodeApi, getAdvisories, audit, telemetry, onChange, pkgscanBaseUrl, preferredPort }) {
+function createProxyController({ context, vscodeApi, getAdvisories, audit, telemetry, onChange, pkgscanBaseUrl, preferredPort, allowLoopbackAssets = false }) {
     let syncing = false;
     let uninstalled = false;
     let restartRequired = false;
@@ -67,6 +67,11 @@ function createProxyController({ context, vscodeApi, getAdvisories, audit, telem
     const proxy = createMarketplaceProxy({
         context,
         pkgscanBaseUrl,
+        // TEST ONLY: lets `/asset/` reach local mock servers. Always `false` in the extension.
+        allowLoopbackAssets,
+        // The proxy moved to a new port because an unverified process took the
+        // shared one. Re-sync so the marketplace settings point at the new port.
+        onPortChanged: () => { void sync(); },
         getUpstream: () => resolveUpstreamMarketplace(context, vscodeApi),
         getAdvisories,
         isAllowlisted: id => isAllowlisted(id, readAllowlist(vscodeApi)),
