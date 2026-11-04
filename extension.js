@@ -43,7 +43,7 @@ const { describeThreats } = require('./threats');
 const { createPane, inspectSetting } = require('./ui/pane');
 const { notifyUnmetHealthChecks } = require('./hardening');
 const { readAllowlist, filterLiveFindings, diffIdSets, isStillOnDisk } = require('./allowlist');
-const { createAuditLog, scanAfterInstall, revokedExtensionIds } = require('./audit');
+const { createAuditLog, createSettledInstalledSync, scanAfterInstall, revokedExtensionIds } = require('./audit');
 const {
     severityRank,
     showAutoModeDisclosureOnce,
@@ -191,10 +191,9 @@ function activate(context) {
     const history = createHistoryStore(context, { getLimit: getHistoryLimit });
 
     // Audit log: allowlist changes, DevGuard removals, installs/uninstalls, setting changes.
-    // Diff installed extensions now (catches changes made while the editor was
-    // closed) and again whenever the extension list changes.
+    // The extension list is compared after it settles, not on the first
+    // onDidChange. A reload reports extensions missing and then back.
     const audit = createAuditLog(context, { getLimit: getHistoryLimit });
-    audit.syncInstalled(vscode.extensions.all);
 
     // Local marketplace proxy: starts immediately on activation so gallery
     // queries, README scan headers, and advisory download blocks are ready.
@@ -233,14 +232,22 @@ function activate(context) {
     activeMonitor = monitor;
     monitor.start();
 
-    // When an extension is installed or updated, scan right away (no debounce)
-    // and write the outcome for that extension into the audit log. Also check
-    // if Dev-Guard itself was uninstalled so the marketplace setting is reverted.
+    // One wait for startup and for every later list change. Each onDidChange
+    // resets it. When it fires, the list has stopped flickering, so a reload
+    // does not log Uninstalled and then Installed for the same version.
+    // A real install is recorded once, then scanned. checkSelfUninstall stays
+    // immediate: that one must not wait a second.
+    const settledInstallSync = createSettledInstalledSync({
+        sync: () => audit.syncInstalled(vscode.extensions.all),
+        onSettled: events => {
+            const added = (events || []).filter(e => e.type === 'installed' || e.type === 'updated');
+            if (added.length > 0) void scanAfterInstall(monitor, audit, added);
+        }
+    });
+    settledInstallSync.scheduleSync();
     const auditWatcher = vscode.extensions.onDidChange(() => {
         void proxyController.checkSelfUninstall();
-        const events = audit.syncInstalled(vscode.extensions.all);
-        const added = events.filter(e => e.type === 'installed' || e.type === 'updated');
-        if (added.length > 0) void scanAfterInstall(monitor, audit, added);
+        settledInstallSync.scheduleSync();
     });
 
     // Side pane in the Activity Bar (shield icon). "DevGuard: Show Panel" focuses it.
@@ -432,7 +439,7 @@ function activate(context) {
         monitor, outputChannel, pane, proxyController, proxyConfigWatcher,
         allowlistWatcher, auditWatcher, taskInterceptor, workspaceWatchers, ...commandDisposables
     );
-    context.subscriptions.push({ dispose: () => { telemetry.dispose(); } });
+    context.subscriptions.push({ dispose: () => { telemetry.dispose(); settledInstallSync.dispose(); } });
 }
 
 const reportedFileAuditKeys = new Set();

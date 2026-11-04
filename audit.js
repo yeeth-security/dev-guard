@@ -27,6 +27,9 @@ const AUDIT_FILE = 'audit-log.json';
 const MAX_AUDIT = DEFAULT_HISTORY_LIMIT;
 const REMOVAL_DEDUPE_MS = 60 * 1000;
 const BLOCK_DEDUPE_MS = 5 * 1000;
+// A reload enables extensions in a few bursts. Wait until that stops
+// before comparing the list, or a brief gap is logged as uninstall + install.
+const EXTENSION_LIST_SETTLE_MS = 1000;
 
 function getAuditFilePath(context) {
     const dir = context && context.globalStorageUri && context.globalStorageUri.fsPath;
@@ -201,6 +204,30 @@ function createAuditLog(context, options = {}) {
     };
 }
 
+/**
+ * Calls `sync` once, a second after the last `scheduleSync`. Startup and
+ * `extensions.onDidChange` both reset that wait. The snapshot is not written
+ * until the timer fires, so a partial list never becomes the saved baseline.
+ */
+function createSettledInstalledSync({ sync, onSettled, settleMs = EXTENSION_LIST_SETTLE_MS, schedule = setTimeout, cancel = clearTimeout } = {}) {
+    let timer = null;
+    function scheduleSync() {
+        if (timer) cancel(timer);
+        timer = schedule(() => {
+            timer = null;
+            let events = [];
+            try { events = sync() || []; } catch (_error) { events = []; }
+            try { onSettled?.(events); } catch (_error) { /* a scan must not break the next diff */ }
+        }, settleMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    }
+    function dispose() {
+        if (timer) cancel(timer);
+        timer = null;
+    }
+    return { scheduleSync, dispose };
+}
+
 async function scanAfterInstall(monitor, audit, added) {
     const result = await monitor.executeCycle('install');
     const flagged = new Set(Array.isArray(result && result.flaggedIds) ? result.flaggedIds : []);
@@ -212,4 +239,7 @@ async function scanAfterInstall(monitor, audit, added) {
     }
 }
 
-module.exports = { AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, snapshotOf, diffSnapshots, revokedExtensionIds, createAuditLog, scanAfterInstall };
+module.exports = {
+    AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, EXTENSION_LIST_SETTLE_MS,
+    snapshotOf, diffSnapshots, revokedExtensionIds, createAuditLog, createSettledInstalledSync, scanAfterInstall
+};
