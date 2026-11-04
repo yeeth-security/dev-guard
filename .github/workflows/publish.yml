@@ -27,6 +27,10 @@ name: publish
 # other publish. --skip-duplicate treats "this version is already published"
 # as success. A different failure, such as the extension name belonging to
 # another publisher, still fails that job.
+#
+# A manual run can start from a branch, because that is where the current
+# workflow file lives. The job then checks out the version tag from
+# package.json and publishes that commit.
 on:
   workflow_dispatch:
   release:
@@ -51,16 +55,28 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # Tags and history are required when a manual run starts from a
+          # branch and the next step checks out the released version tag.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
-      - name: Require a version tag
+      # GitHub runs this workflow file from the branch selected in the UI.
+      # Publish the tagged release that package.json names, not the branch tip.
+      - name: Check out the released version tag
         if: github.event_name == 'workflow_dispatch' && github.ref_type != 'tag'
         run: |
-          echo "Refusing to publish from '$GITHUB_REF': publish a version tag instead (use the release workflow)." >&2
-          exit 1
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "No tag $TAG for package.json version $VERSION. Run the release workflow before publishing." >&2
+            exit 1
+          fi
+          git checkout --detach "$TAG"
+          echo "Checked out $TAG ($(git rev-parse --short HEAD)) from $GITHUB_REF"
 
       - name: Verify version matches release tag
         if: github.event_name == 'release'
@@ -89,16 +105,28 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # Tags and history are required when a manual run starts from a
+          # branch and the next step checks out the released version tag.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
-      - name: Require a version tag
+      # GitHub runs this workflow file from the branch selected in the UI.
+      # Publish the tagged release that package.json names, not the branch tip.
+      - name: Check out the released version tag
         if: github.event_name == 'workflow_dispatch' && github.ref_type != 'tag'
         run: |
-          echo "Refusing to publish from '$GITHUB_REF': publish a version tag instead (use the release workflow)." >&2
-          exit 1
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "No tag $TAG for package.json version $VERSION. Run the release workflow before publishing." >&2
+            exit 1
+          fi
+          git checkout --detach "$TAG"
+          echo "Checked out $TAG ($(git rev-parse --short HEAD)) from $GITHUB_REF"
 
       - name: Verify version matches release tag
         if: github.event_name == 'release'
