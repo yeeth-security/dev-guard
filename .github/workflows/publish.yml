@@ -1,15 +1,27 @@
 name: publish
 
-# Publishes the extension to Open VSX with trusted publishing (OIDC).
-# No OVSX_PAT secret is stored: the registry exchanges the workflow's GitHub
-# ID token for a short-lived token scoped to this one extension.
+# Publishes the extension with trusted publishing (OIDC). No long-lived
+# registry token is stored. Each registry exchanges this workflow's GitHub
+# ID token for a short-lived credential.
 #
-# One-time setup on https://open-vsx.org -> Settings -> Trusted Publishers:
+# Open VSX, one-time setup at https://open-vsx.org -> Settings -> Trusted Publishers:
 #   namespace          yeeth
 #   organization/user  yeeth-security
 #   repository         dev-guard
 #   workflow filename  publish.yml
 #   environment        publish
+#
+# Visual Studio Marketplace, one-time setup on the yeeth publisher
+# (https://marketplace.visualstudio.com/manage/publishers/yeeth -> Trusted Publishing):
+#   Policy name        Release workflow
+#   Repository owner   yeeth-security
+#   Repository         dev-guard
+#   Workflow           publish.yml
+#   Environment        publish
+# The publisher name comes from package.json ("yeeth"). The repository owner
+# is the GitHub org, which is yeeth-security. A private repo must run this
+# workflow within 48 hours of creating the policy so the first token exchange
+# can activate it.
 on:
   workflow_dispatch:
   release:
@@ -26,7 +38,8 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Two registries. Each publish downloads its CLI, then exchanges an OIDC token.
+    timeout-minutes: 20
     # Must match the environment in the trusted publisher registration.
     environment: publish
     steps:
@@ -58,5 +71,15 @@ jobs:
       - name: Publish to Open VSX
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "Publishing dev-guard $VERSION via trusted publishing"
+          echo "Publishing dev-guard $VERSION to Open VSX via trusted publishing"
           npx --yes ovsx@1.3.0 publish --trusted-publishing
+
+      # vsce 4.1.0 is the release that publishes with --oidc. It asks for
+      # confirmation when activationEvents is "*", and CI cannot answer, so
+      # --allow-star-activation is required. The star event lets Dev-Guard
+      # start in Restricted Mode.
+      - name: Publish to Visual Studio Marketplace
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Publishing dev-guard $VERSION to the yeeth Marketplace publisher via trusted publishing"
+          npx --yes @vscode/vsce@4.1.0 publish --oidc --allow-star-activation
