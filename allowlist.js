@@ -41,6 +41,19 @@ function isAllowlisted(extensionId, allowlist) {
     return allowlist instanceof Set && allowlist.has(String(extensionId || '').toLowerCase());
 }
 
+/**
+ * Ids that left or joined the allowlist between two snapshots.
+ * Used when the user edits `devGuard.allowlist` in the Settings UI.
+ */
+function diffIdSets(previous, next) {
+    const prev = previous instanceof Set ? previous : new Set();
+    const nxt = next instanceof Set ? next : new Set();
+    return {
+        removed: [...prev].filter(id => !nxt.has(id)),
+        added: [...nxt].filter(id => !prev.has(id))
+    };
+}
+
 /** Writes the allowlist to the user's global settings. */
 async function writeAllowlist(vscodeApi, ids) {
     const target = vscodeApi.ConfigurationTarget ? vscodeApi.ConfigurationTarget.Global : true;
@@ -99,6 +112,7 @@ module.exports = {
     normalizeAllowlist,
     readAllowlist,
     isAllowlisted,
+    diffIdSets,
     addToAllowlist,
     removeFromAllowlist,
     isStillOnDisk,

@@ -32,6 +32,14 @@ const HOST_TO_REGISTRY = [
     { match: 'open-vsx.org', registry: 'openvsx' }
 ];
 
+// Default upstream gallery service URLs for each known registry slug.
+// Used when `product.json` cannot be read or has no `extensionsGallery.serviceUrl`.
+const REGISTRY_TO_SERVICE_URL = {
+    'vscode-marketplace': 'https://marketplace.visualstudio.com/_apis/public/gallery',
+    'cursor-marketplace': 'https://marketplace.cursorapi.com/_apis/public/gallery',
+    openvsx: 'https://open-vsx.org/vscode/gallery'
+};
+
 // Fallback mapping when product.json is unavailable.
 const APP_NAME_TO_REGISTRY = [
     { match: 'cursor', registry: 'cursor-marketplace' },
@@ -65,7 +73,8 @@ function registryFromGalleryConfig(gallery) {
     if (!gallery || typeof gallery !== 'object') {
         return null;
     }
-    const serviceUrl = String(gallery.serviceUrl || '').toLowerCase();
+    const rawUrl = gallery._devGuardOriginalServiceUrl || gallery.serviceUrl || '';
+    const serviceUrl = String(rawUrl).toLowerCase();
     for (const entry of HOST_TO_REGISTRY) {
         if (serviceUrl.includes(entry.match)) {
             return entry.registry;
@@ -108,6 +117,39 @@ function resolveEditorRegistry(env = {}) {
     }
 
     return { registry: null, method: 'unknown' };
+}
+
+/**
+ * Resolves the active editor's upstream gallery `serviceUrl` and registry slug.
+ * Reads `extensionsGallery.serviceUrl` from `product.json` first. Falls back to
+ * the default gallery URL for the detected editor when `product.json` is absent.
+ * @param {{appRoot?: string, appName?: string, uriScheme?: string, readFileSync?: Function}} [env]
+ * @returns {{serviceUrl: string, registry: string|null, method: 'product.json'|'appName'|'unknown'}}
+ */
+function resolveEditorGalleryUrl(env = {}) {
+    const read = env.readFileSync || fs.readFileSync;
+    if (typeof env.appRoot === 'string' && env.appRoot.length > 0) {
+        try {
+            const productPath = path.join(env.appRoot, 'product.json');
+            const parsed = JSON.parse(read(productPath, 'utf8'));
+            const gallery = parsed && parsed.extensionsGallery;
+            const candidate = gallery && (gallery._devGuardOriginalServiceUrl || gallery.serviceUrl);
+            const rawUrl = typeof candidate === 'string' ? candidate.trim() : '';
+            if (/^https?:\/\//i.test(rawUrl) && !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(rawUrl)) {
+                return {
+                    serviceUrl: rawUrl.replace(/\/+$/, ''),
+                    registry: registryFromGalleryConfig(gallery),
+                    method: 'product.json'
+                };
+            }
+        } catch (_error) {
+            // Fall back to editor registry mapping when product.json is unreadable.
+        }
+    }
+    const detected = resolveEditorRegistry(env);
+    const serviceUrl = (detected.registry && REGISTRY_TO_SERVICE_URL[detected.registry])
+        || REGISTRY_TO_SERVICE_URL.openvsx;
+    return { serviceUrl, registry: detected.registry, method: detected.method };
 }
 
 /**
@@ -214,15 +256,23 @@ function isRegistryAndPlatformMatch(advisoryEntry, extension, extProvenance, edi
         return true;
     }
 
+    // Cursor's marketplace (`cursor-marketplace`) is backed by Open VSX, so
+    // gallery extensions in Cursor match both `cursor-marketplace` and `openvsx`.
+    if (normalizedEditor === 'cursor-marketplace' && advisoryRegistry === 'openvsx') {
+        return true;
+    }
+
     return advisoryRegistry === normalizedEditor;
 }
 
 module.exports = {
     HOST_TO_REGISTRY,
+    REGISTRY_TO_SERVICE_URL,
     APP_NAME_TO_REGISTRY,
     normalizeRegistrySlug,
     registryFromGalleryConfig,
     resolveEditorRegistry,
+    resolveEditorGalleryUrl,
     loadExtensionProvenance,
     isPlatformMatch,
     isRegistryAndPlatformMatch

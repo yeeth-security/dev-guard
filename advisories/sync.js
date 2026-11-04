@@ -30,7 +30,10 @@ const PKGSCAN_FETCH_TIMEOUT_MS = 15000;
 const PKGSCAN_MAX_ATTEMPTS = 4;
 
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve => {
+        const t = setTimeout(resolve, ms);
+        if (typeof t?.unref === 'function') t.unref();
+    });
 }
 
 /**
@@ -108,6 +111,7 @@ function buildAdvisoriesUrl({ baseUrl = PKGSCAN_ADVISORIES_URL, limit, offset = 
 async function fetchPageWithMeta(url, { etag = null, fetchImpl = fetch, timeoutMs = PKGSCAN_FETCH_TIMEOUT_MS } = {}, attempt = 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (typeof timer?.unref === 'function') timer.unref();
     const headers = { accept: 'application/json' };
     if (etag) headers['if-none-match'] = etag;
 

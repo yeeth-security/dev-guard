@@ -5,27 +5,59 @@
  * side pane:
  *   - allowed / unallowed      an extension was added to or removed from the allowlist
  *   - removed                  DevGuard uninstalled a flagged extension
+ *   - blocked                  DevGuard blocked a malicious/unscanned marketplace download
  *   - installed / uninstalled / updated   extension inventory changed
- *   - mode / marketplace       a DevGuard setting changed from the pane
+ *   - mode / marketplace / proxy / hardening   a setting changed from the pane
  *
- * Install tracking works by diffing a persisted snapshot of installed
- * extensions (id -> version). The first run only saves the snapshot, so a
- * fresh install does not log every existing extension as "installed".
- *
- * No `vscode` import, so it is easy to unit test.
+ * Multi-window synchronization:
+ *   VS Code / Cursor caches `context.globalState` in memory per Extension Host,
+ *   so an event recorded in Window 1 (which owns the local proxy port) would
+ *   not automatically appear in Window 2's `globalState`. When `globalStorageUri`
+ *   is available, we also mirror and merge `audit-log.json` on disk so every
+ *   open window always reads and displays the complete, up-to-date audit log.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { DEFAULT_HISTORY_LIMIT, clampHistoryLimit } = require('./history');
 
 const AUDIT_KEY = 'devGuard.auditLog';
 const SNAPSHOT_KEY = 'devGuard.installedSnapshot';
-// Default cap. The live cap comes from the `devGuard.historyLimit` setting.
+const AUDIT_FILE = 'audit-log.json';
 const MAX_AUDIT = DEFAULT_HISTORY_LIMIT;
-// An "uninstalled" entry this close before a "removed" entry for the same id is
-// the same event seen twice (see `record`). A removal cycle takes well under this.
 const REMOVAL_DEDUPE_MS = 60 * 1000;
+const BLOCK_DEDUPE_MS = 5 * 1000;
+// A reload enables extensions in a few bursts. Wait until that stops
+// before comparing the list, or a brief gap is logged as uninstall + install.
+const EXTENSION_LIST_SETTLE_MS = 1000;
 
-function readList(context, key) {
+function getAuditFilePath(context) {
+    const dir = context && context.globalStorageUri && context.globalStorageUri.fsPath;
+    return typeof dir === 'string' && dir ? path.join(dir, AUDIT_FILE) : null;
+}
+
+function readDiskAudit(context) {
+    const filePath = getAuditFilePath(context);
+    if (!filePath) return [];
+    try {
+        if (!fs.existsSync(filePath)) return [];
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (_error) {
+        return [];
+    }
+}
+
+function writeDiskAudit(context, list) {
+    const filePath = getAuditFilePath(context);
+    if (!filePath) return;
+    try {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(list), 'utf8');
+    } catch (_error) { /* ignore disk write errors */ }
+}
+
+function readStateList(context, key) {
     try {
         const raw = context.globalState.get(key);
         return Array.isArray(raw) ? raw : [];
@@ -34,12 +66,35 @@ function readList(context, key) {
     }
 }
 
-function write(context, key, value) {
+function writeState(context, key, value) {
     try {
         void context.globalState.update(key, value);
     } catch (error) {
         console.warn(`Could not save ${key}:`, error);
     }
+}
+
+/** Merges in-memory `globalState` entries with shared `audit-log.json` entries without duplicates. */
+function readMergedAuditList(context) {
+    const fromState = readStateList(context, AUDIT_KEY);
+    const fromDisk = readDiskAudit(context);
+    if (fromDisk.length === 0) return fromState;
+    if (fromState.length === 0) return fromDisk;
+
+    const combined = [...fromState, ...fromDisk];
+    combined.sort((a, b) => (b.at || 0) - (a.at || 0));
+    const deduped = [];
+    for (const item of combined) {
+        if (!item || typeof item !== 'object') continue;
+        const isDup = deduped.some(existing =>
+            existing.type === item.type
+            && (existing.id || '') === (item.id || '')
+            && (existing.detail || '') === (item.detail || '')
+            && Math.abs((existing.at || 0) - (item.at || 0)) < 2000
+        );
+        if (!isDup) deduped.push(item);
+    }
+    return deduped;
 }
 
 /** Builds `{ "publisher.name": "1.2.3" }` from `vscode.extensions.all`, skipping builtins. */
@@ -52,11 +107,7 @@ function snapshotOf(extensions) {
     return snap;
 }
 
-/**
- * Compares two snapshots and returns audit entries for the differences.
- * `lastEventFor(id)` lets us skip an "uninstalled" entry right after DevGuard
- * itself removed the extension, so one removal is not logged twice.
- */
+/** Compares two snapshots and returns audit entries for the differences. */
 function diffSnapshots(previous, current, now, lastEventFor = () => null) {
     const events = [];
     for (const [id, version] of Object.entries(current)) {
@@ -66,38 +117,57 @@ function diffSnapshots(previous, current, now, lastEventFor = () => null) {
     for (const [id, version] of Object.entries(previous)) {
         if (id in current) continue;
         const last = lastEventFor(id);
-        if (last && last.type === 'removed') continue; // already logged as a DevGuard removal
+        if (last && last.type === 'removed') continue;
         events.push({ at: now, type: 'uninstalled', id, version });
     }
     return events;
 }
 
 /**
- * Creates the audit log bound to one extension context.
- * @param {any} context
- * @param {{getLimit?: () => any}} [options] `getLimit` reads the user's
- *   `devGuard.historyLimit` setting (see history.js for the clamping rules).
+ * Extension ids that should be checked against the pkgscan engine scan.
+ * The advisory feed does not list every blocked package. After the user
+ * revokes an allowance, the next scan (including after a reload) still needs
+ * to know which installed ids left the allowlist.
+ *
+ * The newest allowlist event wins. `unallowed` and `blocked` count.
+ * `allowed` does not, and an id that is on the allowlist right now does not.
+ * Other events (installed, scanned) are ignored. Order of `events` does not matter.
  */
+function revokedExtensionIds(events, allowlist) {
+    const allow = allowlist instanceof Set ? allowlist : new Set();
+    const latest = new Map();
+    const sorted = (Array.isArray(events) ? events : [])
+        .filter(event => event && (event.type === 'allowed' || event.type === 'unallowed' || event.type === 'blocked'))
+        .sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const event of sorted) {
+        const id = String(event.id || '').toLowerCase();
+        if (!id || latest.has(id)) continue;
+        latest.set(id, event.type);
+    }
+    const ids = [];
+    for (const [id, type] of latest) {
+        if (type === 'allowed' || allow.has(id)) continue;
+        ids.push(id);
+    }
+    return ids;
+}
+
 function createAuditLog(context, options = {}) {
     const listeners = new Set();
     const emit = () => listeners.forEach(fn => { try { fn(); } catch (_e) { /* ignore */ } });
     const limit = () => clampHistoryLimit(options.getLimit ? options.getLimit() : undefined);
 
-    // Sliced on read too, so lowering the limit trims the pane immediately.
-    const list = () => readList(context, AUDIT_KEY).slice(0, limit());
+    const list = () => readMergedAuditList(context).slice(0, limit());
     const lastEventFor = id => list().find(e => e.id === String(id).toLowerCase()) || null;
 
     function recordMany(entries, existing = list()) {
         if (entries.length === 0) return;
-        // IDs are stored lower-case so lookups are consistent.
         const normalized = entries.map(e => ({ ...e, id: e.id ? String(e.id).toLowerCase() : undefined }));
-        // Newest first, ordered by timestamp (not insertion). Entries may be
-        // recorded out of order: e.g. the post-install "scanned" entry is
-        // stamped with the scan's start time but written after the scan ends.
-        // Stable sort keeps same-timestamp entries in insertion order.
         const merged = [...normalized.reverse(), ...existing];
         merged.sort((a, b) => (b.at || 0) - (a.at || 0));
-        write(context, AUDIT_KEY, merged.slice(0, limit()));
+        const capped = merged.slice(0, limit());
+        writeState(context, AUDIT_KEY, capped);
+        writeDiskAudit(context, capped);
         emit();
     }
 
@@ -109,25 +179,20 @@ function createAuditLog(context, options = {}) {
             const e = { at: Date.now(), ...entry };
             let existing = list();
             if (e.type === 'removed' && e.id) {
-                // The uninstall command fires `extensions.onDidChange` before it
-                // resolves, so syncInstalled may already have logged "uninstalled"
-                // for this very removal. Drop that duplicate; "removed" wins.
                 const id = String(e.id).toLowerCase();
                 existing = existing.filter(x => !(x.type === 'uninstalled' && x.id === id && e.at - (x.at || 0) < REMOVAL_DEDUPE_MS));
+            } else if (e.type === 'blocked' && e.id) {
+                const id = String(e.id).toLowerCase();
+                existing = existing.filter(x => !(x.type === 'blocked' && x.id === id && Math.abs(e.at - (x.at || 0)) < BLOCK_DEDUPE_MS));
             }
             recordMany([e], existing);
         },
-        /**
-         * Diffs the installed extensions against the saved snapshot and logs
-         * installs, uninstalls, and updates. Call at activation and on
-         * `vscode.extensions.onDidChange`.
-         */
         syncInstalled(extensions, now = Date.now()) {
             const current = snapshotOf(extensions);
             let previous = null;
             try { previous = context.globalState.get(SNAPSHOT_KEY) || null; } catch (_e) { previous = null; }
-            write(context, SNAPSHOT_KEY, current);
-            if (!previous || typeof previous !== 'object') return []; // first run: baseline only
+            writeState(context, SNAPSHOT_KEY, current);
+            if (!previous || typeof previous !== 'object') return [];
             const events = diffSnapshots(previous, current, now, lastEventFor);
             recordMany(events);
             return events;
@@ -140,19 +205,32 @@ function createAuditLog(context, options = {}) {
 }
 
 /**
- * Runs a scan immediately after extensions were installed or updated, then
- * records one "scanned" audit entry per extension saying whether it was clear
- * or flagged. `monitor` and `audit` are passed in so this has no VS Code
- * dependency and is easy to test.
- * @param {{executeCycle: (trigger: string) => Promise<any>}} monitor
- * @param {{record: (entry: object) => void}} audit
- * @param {Array<{id: string, version?: string}>} added installed/updated events
+ * Calls `sync` once, a second after the last `scheduleSync`. Startup and
+ * `extensions.onDidChange` both reset that wait. The snapshot is not written
+ * until the timer fires, so a partial list never becomes the saved baseline.
  */
+function createSettledInstalledSync({ sync, onSettled, settleMs = EXTENSION_LIST_SETTLE_MS, schedule = setTimeout, cancel = clearTimeout } = {}) {
+    let timer = null;
+    function scheduleSync() {
+        if (timer) cancel(timer);
+        timer = schedule(() => {
+            timer = null;
+            let events = [];
+            try { events = sync() || []; } catch (_error) { events = []; }
+            try { onSettled?.(events); } catch (_error) { /* a scan must not break the next diff */ }
+        }, settleMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    }
+    function dispose() {
+        if (timer) cancel(timer);
+        timer = null;
+    }
+    return { scheduleSync, dispose };
+}
+
 async function scanAfterInstall(monitor, audit, added) {
     const result = await monitor.executeCycle('install');
     const flagged = new Set(Array.isArray(result && result.flaggedIds) ? result.flaggedIds : []);
-    // Stamp with the scan's start time so the entry sorts between "installed"
-    // and any "removed" the same scan produced (installed → scanned → removed).
     const at = result && Number.isFinite(result.startedAt) ? result.startedAt : Date.now();
     for (const ext of added) {
         const id = String(ext.id || '').toLowerCase();
@@ -161,4 +239,7 @@ async function scanAfterInstall(monitor, audit, added) {
     }
 }
 
-module.exports = { AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, snapshotOf, diffSnapshots, createAuditLog, scanAfterInstall };
+module.exports = {
+    AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, EXTENSION_LIST_SETTLE_MS,
+    snapshotOf, diffSnapshots, revokedExtensionIds, createAuditLog, createSettledInstalledSync, scanAfterInstall
+};

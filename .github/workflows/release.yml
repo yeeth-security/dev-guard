@@ -8,7 +8,7 @@ name: release
 #   2. Merge to main.
 #   3. This workflow validates the JS, packages the VSIX, tags v<version>,
 #      publishes the release (notes + SHA256 checksum), then dispatches the
-#      Open VSX publish workflow.
+#      publish workflow (Open VSX and Visual Studio Marketplace).
 #
 # Releases created with GITHUB_TOKEN do not trigger other workflows, which is
 # why the publish workflow is dispatched explicitly. Manual dispatch is still
@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: Trigger the Open VSX publish workflow after releasing
+        description: Trigger the Open VSX and Visual Studio Marketplace publish workflow after releasing
         type: boolean
         default: true
 
@@ -104,7 +104,9 @@ jobs:
         id: package
         run: |
           VSIX="dev-guard-${{ steps.version.outputs.version }}.vsix"
-          npx --yes @vscode/vsce@3 package --out "$VSIX"
+          # --allow-star-activation: activationEvents is "*", and vsce would
+          # otherwise prompt in a way CI cannot answer.
+          npx --yes @vscode/vsce@3 package --out "$VSIX" --allow-star-activation
           sha256sum "$VSIX" > "$VSIX.sha256"
           echo "vsix=$VSIX" >> "$GITHUB_OUTPUT"
           echo "sha256=$VSIX.sha256" >> "$GITHUB_OUTPUT"
@@ -124,7 +126,7 @@ jobs:
             "${{ steps.package.outputs.vsix }}" \
             "${{ steps.package.outputs.sha256 }}"
 
-      - name: Trigger Open VSX publish
+      - name: Trigger marketplace publish
         if: steps.check.outputs.release == 'true' && (github.event_name == 'push' || inputs.publish)
         env:
           GH_TOKEN: ${{ github.token }}
