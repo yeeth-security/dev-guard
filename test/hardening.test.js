@@ -258,7 +258,7 @@ test('pane harden message updates Global setting, records audit, and emits telem
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.ok(calls.telemetry.some(e => e.name === 'pkgscan_opened' && e.props.source === 'pane_header'));
     assert.ok(calls.telemetry.some(e => e.name === 'security_guide_opened' && e.props.from === 'pane_health_check'));
-    assert.ok(calls.telemetry.some(e => e.name === 'pkgscan_opened' && e.props.source === 'pane_removed_report'));
+    assert.ok(calls.telemetry.some(e => e.name === 'pkgscan_opened' && e.props.source === 'pane_extension_report'));
 });
 
 test('telemetry recordState and recordOnce deduplicate health posture and repeated events per user', async () => {

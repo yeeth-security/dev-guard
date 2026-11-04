@@ -20,12 +20,22 @@
     "activationEvents": [
         "*"
     ],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": true,
+            "description": "Dev-Guard scans .vscode/ files and extensions in Restricted Mode before a folder is trusted."
+        }
+    },
     "main": "./extension.js",
     "contributes": {
         "commands": [
             {
                 "command": "devGuard.checkExtensions",
                 "title": "Dev-Guard: Check Installed Extensions"
+            },
+            {
+                "command": "devGuard.scanWorkspace",
+                "title": "Dev-Guard: Scan Workspace & Profile for File Threats"
             },
             {
                 "command": "devGuard.showPanel",
@@ -98,6 +108,14 @@
                     },
                     "default": [],
                     "description": "Extension IDs (publisher.name) that dev-guard must never flag or uninstall, even if they match a malicious advisory. In auto mode a flagged extension is removed again every time it is reinstalled until its ID is listed here."
+                },
+                "devGuard.allowedFiles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Files dev-guard should not flag. Each entry is the file name with its SHA-256 in parentheses, such as .vscode/tasks.json (abc123...). A bare hash is still accepted."
                 },
                 "devGuard.historyLimit": {
                     "type": "number",

@@ -3,7 +3,7 @@
  *
  * Lives in the Activity Bar under the DevGuard shield icon. Shows the verdict,
  * lets the user run a scan and change mode / marketplace, and lists the scan
- * log, removed extensions, audit log, and inventory. HTML is built in
+ * log, extension threats, allowed extensions, allowed files, and audit log. HTML is built in
  * `ui/paneHtml.js`; this file owns the view lifecycle and messages.
  */
 
@@ -12,8 +12,10 @@ const vscode = require('vscode');
 const { renderPane, renderParts } = require('./paneHtml');
 const { HARDEN_GUIDE_URL } = require('./paneSections');
 const { readAllowlist, addToAllowlist, removeFromAllowlist } = require('../allowlist');
+const { readAllowedFiles, readAllowedFileRecords } = require('../scanner/quarantine');
 const { CHECKS, readState, openCount, applyCheck, summarizeHealthPosture, splitSettingKey, versionBucket } = require('../hardening');
-const { REMOVAL_GUIDE_URL } = require('../notifier');
+const { REMOVAL_GUIDE_URL, dismissActionNotices } = require('../notifier');
+const { openInEditor } = require('../openUrl');
 
 const VIEW_ID = 'devGuard.panel';
 const MODES = ['auto', 'manual', 'warn'];
@@ -66,7 +68,24 @@ async function updateGlobalSetting(key, value) {
  *   telemetry?: { record: Function }
  * }} deps
  */
-function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamMarketplace, telemetry }) {
+function createPane({
+    history,
+    audit,
+    getStatus,
+    runScan,
+    setProxy,
+    setUpstreamMarketplace,
+    getFileThreats,
+    getQuarantined,
+    onQuarantineFile,
+    onRestoreFile,
+    onInspectFile,
+    onAllowFile,
+    onUnallowFile,
+    getExtensionThreats,
+    onRemoveExtension,
+    telemetry
+}) {
     /** @type {vscode.WebviewView|null} */
     let view = null;
     let scanning = false;
@@ -78,7 +97,11 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
 
     function collectData() {
         const status = getStatus() || {};
-        const rawRows = readState(inspectSetting, { appName: vscode.env && vscode.env.appName });
+        const fileThreats = typeof getFileThreats === 'function' ? getFileThreats() : [];
+        const rawRows = readState(inspectSetting, {
+            appName: vscode.env && vscode.env.appName,
+            fileThreatCount: Array.isArray(fileThreats) ? fileThreats.length : 0
+        });
         // Keep the user's deduplicated health posture in sync whenever settings or the proxy change.
         if (typeof telemetry?.recordState === 'function') {
             telemetry.recordState('health_posture', 'health_check_posture', summarizeHealthPosture(rawRows, {
@@ -92,10 +115,13 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
         return {
             status,
             runs: history.listRuns(),
-            removed: history.listRemoved(),
-            inventory: history.getLastInventory(),
+            extensionThreats: typeof getExtensionThreats === 'function' ? getExtensionThreats() : [],
+            fileThreats,
+            quarantined: typeof getQuarantined === 'function' ? getQuarantined() : [],
             audit: audit.list(),
             allowlist: [...readAllowlist(vscode)].sort(),
+            allowedFiles: [...readAllowedFiles(vscode)].sort(),
+            allowedFileRecords: readAllowedFileRecords(vscode),
             hardening,
             scanning
         };
@@ -134,7 +160,13 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
                 try { await runScan(); } finally { scanning = false; refresh(); }
                 break;
             case 'settings':
-                void vscode.commands.executeCommand('workbench.action.openSettings', 'devGuard');
+                // Opens this extension's page in the Settings editor.
+                // Do not await the command. Cursor stringifies the Settings
+                // editor it returns, and that walk can stall the window
+                // (forum #163463). The filter is `@ext:yeeth.dev-guard`.
+                setTimeout(() => {
+                    void vscode.commands.executeCommand('workbench.action.openSettings', '@ext:yeeth.dev-guard');
+                }, 0);
                 break;
             case 'harden': {
                 const check = typeof message.check === 'string' ? message.check : '';
@@ -171,21 +203,21 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
                 void vscode.commands.executeCommand('workbench.action.reloadWindow');
                 break;
             case 'openUrl':
-                if (typeof message.url === 'string' && /^https:\/\//.test(message.url)) {
-                    void vscode.env.openExternal(vscode.Uri.parse(message.url));
+                // Guides and reports open in a Simple Browser tab, not the system browser.
+                if (openInEditor(vscode, message.url)) {
                     // Track which security guide or pkgscan report link the user opened.
                     if (message.url === REMOVAL_GUIDE_URL) {
                         telemetry?.record('removal_guide_opened', { from: 'pane' });
                     } else if (message.url === HARDEN_GUIDE_URL) {
                         telemetry?.record('security_guide_opened', { from: 'pane_health_check' });
                     } else if (message.url.includes('pkgscan.dev')) {
-                        telemetry?.record('pkgscan_opened', { source: 'pane_removed_report' });
+                        telemetry?.record('pkgscan_opened', { source: 'pane_extension_report' });
                     }
                 }
                 break;
             case 'pkgscan':
                 telemetry?.record('pkgscan_opened', { source: 'pane_header' });
-                void vscode.env.openExternal(vscode.Uri.parse(PKGSCAN_URL));
+                openInEditor(vscode, PKGSCAN_URL);
                 break;
             case 'copy':
                 // Hash chips: copy the full SHA-256 and confirm in the status bar.
@@ -229,6 +261,14 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
                 }
                 break;
             }
+            case 'removeExtension':
+                if (!id) return;
+                // The uninstall toast has no close handle. Drop it before the
+                // pane shows the reload message, or that message would go too.
+                await dismissActionNotices(vscode, 'extension');
+                await onRemoveExtension?.(id);
+                refresh();
+                break;
             case 'allow':
                 if (!id) return;
                 {
@@ -238,6 +278,7 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
                         { modal: true }, 'Allow'
                     );
                     if (choice === 'Allow') {
+                        await dismissActionNotices(vscode, 'extension');
                         await addToAllowlist(vscode, id);
                         audit.record({ type: 'allowed', id });
                         telemetry?.record('allowlist_added', { extension_id: id, from: 'pane' });
@@ -251,6 +292,39 @@ function createPane({ history, audit, getStatus, runScan, setProxy, setUpstreamM
                 await removeFromAllowlist(vscode, id);
                 audit.record({ type: 'unallowed', id });
                 telemetry?.record('allowlist_removed', { extension_id: id });
+                break;
+            case 'quarantineFile':
+                if (typeof message.filePath === 'string' && message.filePath.trim()) {
+                    // Same threat the file toast is asking about. The toast
+                    // should leave once the pane has quarantined it.
+                    await dismissActionNotices(vscode, 'file');
+                    await onQuarantineFile?.(message.filePath.trim());
+                    refresh();
+                }
+                break;
+            case 'restoreFile':
+                if (typeof message.key === 'string' && message.key.trim()) {
+                    await onRestoreFile?.(message.key.trim());
+                    refresh();
+                }
+                break;
+            case 'inspectFile':
+                if (typeof message.filePath === 'string' && message.filePath.trim()) {
+                    await onInspectFile?.(message.filePath.trim());
+                }
+                break;
+            case 'allowFile':
+                if (typeof message.sha256 === 'string' && message.sha256.trim()) {
+                    await dismissActionNotices(vscode, 'file');
+                    await onAllowFile?.(message.sha256.trim());
+                    refresh();
+                }
+                break;
+            case 'unallowFile':
+                if (typeof message.sha256 === 'string' && message.sha256.trim()) {
+                    await onUnallowFile?.(message.sha256.trim(), typeof message.label === 'string' ? message.label.trim() : '');
+                    refresh();
+                }
                 break;
             default:
                 break;

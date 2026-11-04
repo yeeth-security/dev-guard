@@ -176,14 +176,27 @@ function readCheck(inspectFn, check, options = {}) {
         };
     }
     const value = info.globalValue !== undefined ? info.globalValue : info.defaultValue;
-    const state = check.isSafe(value) ? 'satisfied' : 'unsatisfied';
+    const settingSafe = check.isSafe(value);
+    // Warn on Auto-run tasks whenever there are unaddressed file threats in .vscode/ or the workspace.
+    const fileThreatCount = check.id === 'automaticTasks' ? (Number(options && options.fileThreatCount) || 0) : 0;
+    const state = settingSafe && fileThreatCount === 0 ? 'satisfied' : 'unsatisfied';
+    let sub = resolveText(settingSafe ? check.safeSub : check.unsafeSub, value);
+    let detail = resolveText(settingSafe ? check.safeDetail : check.unsafeDetail, value);
+    if (fileThreatCount > 0) {
+        const threatNoun = fileThreatCount === 1 ? '1 unaddressed file threat' : `${fileThreatCount} unaddressed file threats`;
+        sub = settingSafe
+            ? `Action needed · ${threatNoun} found`
+            : `Action needed · Tasks can run when a folder opens (${threatNoun})`;
+        detail = `${threatNoun} detected in .vscode or workspace. Quarantine or allow the threat in File threats to clear this warning.`;
+    }
     return {
         id: check.id, key, icon: check.icon, label: check.label,
         state, value, valueLabel: check.format(value),
         recommended: check.recommended, recommendedLabel: check.format(check.recommended),
-        sub: resolveText(state === 'satisfied' ? check.safeSub : check.unsafeSub, value),
-        detail: resolveText(state === 'satisfied' ? check.safeDetail : check.unsafeDetail, value),
-        tooltip: check.tooltip
+        sub,
+        detail,
+        tooltip: check.tooltip,
+        fileThreatWarning: settingSafe && fileThreatCount > 0
     };
 }
 
@@ -239,8 +252,8 @@ function summarizeHealthPosture(rows, { proxyEnabled = true, editorVersion = '' 
 }
 
 /** Warns the user on startup if any health check items (or the proxy) are not met. */
-function notifyUnmetHealthChecks({ inspectFn, appName, editorVersion = '', proxyEnabled = true, proxyNeedsRestart = false, showWarning, onOpenPane, telemetry } = {}) {
-    const rows = readState(inspectFn, { appName });
+function notifyUnmetHealthChecks({ inspectFn, appName, editorVersion = '', proxyEnabled = true, proxyNeedsRestart = false, fileThreatCount = 0, showWarning, onOpenPane, telemetry } = {}) {
+    const rows = readState(inspectFn, { appName, fileThreatCount });
     const posture = summarizeHealthPosture(rows, { proxyEnabled, editorVersion });
     // Report the user's health posture only when it changes (`recordState`).
     if (typeof telemetry?.recordState === 'function') {

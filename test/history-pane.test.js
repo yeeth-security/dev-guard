@@ -8,7 +8,7 @@ const {
     sha256, hashExtensions, hashAdvisorySet, hashInventory, createHistoryStore, clampHistoryLimit,
     MAX_RUNS, DEFAULT_HISTORY_LIMIT, MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT
 } = require('../history');
-const { normalizeAllowlist, isAllowlisted, isStillOnDisk, filterLiveFindings } = require('../allowlist');
+const { normalizeAllowlist, isAllowlisted, isStillOnDisk, filterLiveFindings, diffIdSets } = require('../allowlist');
 const { esc, renderPane, renderParts } = require('../ui/paneHtml');
 const { computeVerdict, humanize } = require('../ui/paneFormat');
 
@@ -100,6 +100,11 @@ test('allowlist normalizes ids and filters findings case-insensitively', () => {
     const io = { existsSync: () => true, readFileSync: () => { throw new Error('no .obsolete'); } };
     const findings = [{ extension: fakeExt('bad.ext', '1') }, { extension: fakeExt('fine.ext', '1') }];
     assert.deepEqual(filterLiveFindings(findings, list, io).map(f => f.extension.id), ['fine.ext']);
+
+    // What a Settings edit looks like: one id leaves, one id joins.
+    const edited = diffIdSets(list, normalizeAllowlist(['other.one', 'new.ext']));
+    assert.deepEqual(edited.removed, ['bad.ext']);
+    assert.deepEqual(edited.added, ['new.ext']);
 });
 
 test('isStillOnDisk tells a reinstall apart from a pending reload', () => {
@@ -121,7 +126,7 @@ test('renderPane escapes untrusted text and shows all sections and controls', ()
     const html = renderPane({
         status: { registry: 'cursor-marketplace', registryMethod: 'product.json', detectedRegistry: 'cursor-marketplace', marketplaceMode: 'default', marketplaceUrl: '', removalMode: 'manual', lastSyncAt: 1, failureCount: 0, pointer: null },
         runs: [{ at: 1, trigger: 'manual', installed: 3, findings: 1, removed: 1, advisoryCount: 10, advisoryHash: 'a'.repeat(64), inventoryHash: 'b'.repeat(64), source: 'pkgscan.dev', stale: false }],
-        removed: [{ at: 1, id: '<script>evil</script>', version: '1', severity: 'high', action: 'auto', title: 'x', permalink: 'https://pkgscan.dev/x' }],
+        extensionThreats: [{ id: '<script>evil</script>', version: '1', severity: 'high', title: 'x', permalink: 'https://pkgscan.dev/x' }],
         audit: [
             { at: 3, type: 'allowed', id: 'ok.ext' },
             { at: 2, type: 'allowed', id: 'ok.ext' },           // older duplicate: no second Revoke button
@@ -136,18 +141,33 @@ test('renderPane escapes untrusted text and shows all sections and controls', ()
     assert.ok(html.includes('Secured by <b>pkgscan.dev</b>'));
     assert.ok(html.includes('Default · Cursor<'), 'marketplace dropdown shows the detected registry');
     assert.match(html, /id="marketplaceUrl" class="input is-hidden"/, 'URL box hidden in default mode');
-    assert.ok(html.includes('1 threat removed'), 'verdict reflects the latest run');
-    for (const title of ['Setup', 'Scan log', 'Removed', 'Audit log', 'Inventory', 'Marketplace', 'Marketplace proxy', 'Mode', 'Feed']) {
+    assert.ok(html.includes('1 threat found'), 'verdict counts the extension that is still installed');
+    for (const title of ['Setup', 'Extension threats', 'File threats', 'Scan log', 'Allowed extensions', 'Allowed files', 'Audit log', 'Marketplace', 'Marketplace proxy', 'Mode', 'Feed']) {
         assert.ok(html.includes(title), `missing section ${title}`);
     }
+    assert.ok(!html.includes('data-section="inventory"'), 'inventory dropdown is gone');
+    assert.ok(!html.includes('data-section="allowlist"'), 'the combined allowlist dropdown is gone');
+    const auditAt = html.indexOf('data-section="audit"');
+    const setupAt = html.indexOf('data-section="setup"');
+    const extThreatAt = html.indexOf('data-section="ext-threats"');
+    const fileThreatAt = html.indexOf('data-section="threats"');
+    assert.ok(setupAt !== -1 && setupAt < auditAt && auditAt < extThreatAt, 'Audit log sits below Setup');
+    assert.ok(extThreatAt < fileThreatAt, 'Extension threats sits above File threats');
+    assert.ok(!html.includes('data-section="removed"'), 'the Removed dropdown is now Extension threats');
+    const scanAt = html.indexOf('data-section="runs"');
+    const extAt = html.indexOf('data-section="allowed-extensions"');
+    const fileAt = html.indexOf('data-section="allowed-files"');
+    assert.ok(scanAt !== -1 && scanAt < extAt && extAt < fileAt, 'allow dropdowns sit after Scan log');
     assert.match(html, /id="proxy" class="switch__input" type="checkbox" role="switch" aria-checked="true" checked/, 'marketplace proxy renders as a checked switch');
     assert.match(html, /<option value="manual" selected>Manual</, 'mode dropdown selects the active mode');
     assert.ok(!html.includes('<script>evil</script>'), 'extension id must be escaped');
     assert.ok(html.includes(esc('<script>evil</script>')));
     assert.ok(html.includes('data-allow='));
-    assert.equal((html.match(/data-unallow="ok\.ext"/g) || []).length, 1, 'exactly one Revoke per allowlisted id');
+    assert.ok(html.includes('data-remove-extension='), 'Uninstall is available on an extension threat');
+    assert.match(html, /id="warn-ext-threats">Action needed</, 'Extension threats header warns while a threat is open');
+    assert.equal((html.match(/data-unallow="ok\.ext"/g) || []).length, 2, 'Revoke once in Allowed extensions and once in the audit log');
     assert.ok(html.includes('Installed') && html.includes('new.ext@2.0'));
-    // Cleanup guide: once on the Removed card, once on the "removed" audit entry.
+    // Cleanup guide: once on the extension threat, once on the "removed" audit entry.
     const guide = 'https://yeethsecurity.com/guides/vscode-extension-malware/#remove';
     assert.equal((html.match(new RegExp(`data-url="${guide}"`, 'g')) || []).length, 2, 'What to do next link on removal entries');
     assert.ok(html.includes('What to do next ↗'));
@@ -171,9 +191,16 @@ test('renderPane custom marketplace shows the URL box and a host-mapping hint', 
 });
 
 test('renderParts keys every fragment by a DOM id present in the full page', () => {
+    const fileHash = 'c'.repeat(64);
+    const fileLabel = `.vscode/env-setup.js (${fileHash})`;
     const data = {
         status: { removalMode: 'auto' }, runs: [{ at: 1, trigger: 'poll', installed: 2, findings: 0, removed: 0, advisoryCount: 5 }],
-        removed: [], audit: [], allowlist: [], inventory: { at: 1, rows: [{ id: 'a.b', version: '1', source: 'gallery', hash: 'c'.repeat(64) }] }, nonce: 'n'
+        removed: [],
+        audit: [{ at: 2, type: 'file_allowed', id: fileLabel, sha256: fileHash }],
+        allowlist: ['ok.ext'],
+        allowedFiles: [fileHash],
+        allowedFileRecords: [{ name: '.vscode/env-setup.js', hash: fileHash, label: fileLabel }],
+        nonce: 'n'
     };
     const parts = renderParts(data);
     const html = renderPane(data);
@@ -182,11 +209,13 @@ test('renderParts keys every fragment by a DOM id present in the full page', () 
         assert.ok(html.includes(fragment), `page embeds the same fragment for ${id}`);
     }
     assert.equal(parts['count-runs'], '1');
-    assert.equal(parts['count-inventory'], '1');
-    assert.ok(parts.inventory.includes('class="inv__id">a.b'), 'inventory rows are stacked');
-    // Install source (plain English, not "gallery") comes first, SHA chip below it.
-    assert.match(parts.inventory, /inv__src">From the marketplace<[^]*?inv__meta">.*data-copy=/);
-    assert.ok(!/>gallery</.test(parts.inventory));
+    assert.equal(parts['count-allowed-extensions'], '1');
+    assert.equal(parts['count-allowed-files'], '1');
+    assert.ok(parts['allowed-extensions'].includes('ok.ext'), 'allowlisted extension is listed');
+    assert.ok(parts['allowed-files'].includes(fileLabel), 'allowed file is name (hash)');
+    assert.ok(!parts['allowed-extensions'].includes(fileHash), 'file hash stays out of the extensions dropdown');
+    assert.ok(parts['allowed-extensions'].includes(`data-unallow="ok.ext"`));
+    assert.ok(parts['allowed-files'].includes(`data-unallow-file="${fileHash}"`));
     assert.ok(html.includes('data-section="runs"') && html.includes("post('ready')"));
 });
 
@@ -201,6 +230,48 @@ test('renderPane shows the reload notice only while a removed extension is still
     const done = renderPane({ ...base, status: { pendingReload: 0 } });
     assert.ok(done.includes('class="hero hero--ok card"'));
     assert.ok(!done.includes('id="reload"'));
+});
+
+test('Protected hero warns when an extension or file was removed recently', () => {
+    const now = Date.now();
+    const guide = 'https://yeethsecurity.com/guides/vscode-extension-malware/#remove';
+    const base = {
+        status: { pendingReload: 0 },
+        runs: [{ at: now, installed: 3, findings: 0, removed: 0 }],
+        audit: [],
+        allowlist: [],
+        nonce: 'n'
+    };
+    const extension = renderPane({ ...base, audit: [{ at: now - 1000, type: 'removed', id: 'bad.ext' }] });
+    assert.ok(extension.includes('Protected'));
+    assert.ok(extension.includes('An extension was removed recently.'));
+    assert.ok(extension.includes(`data-url="${guide}"`) && extension.includes('Security guide'));
+    assert.ok(!extension.includes('id="reload"'), 'the reload button stays on the pending-reload notice');
+
+    const file = renderPane({ ...base, audit: [{ at: now - 1000, type: 'quarantined', id: '.vscode/tasks.json' }] });
+    assert.ok(file.includes('A file was quarantined recently.'));
+    assert.ok(file.includes('Security guide'));
+
+    const both = renderPane({
+        ...base,
+        audit: [
+            { at: now - 1000, type: 'removed', id: 'bad.ext' },
+            { at: now - 2000, type: 'quarantined', id: '.vscode/tasks.json' }
+        ]
+    });
+    assert.ok(both.includes('An extension was removed and a file was quarantined recently.'));
+
+    // Put back, or old enough that it is no longer recent: no warning.
+    const restored = renderPane({
+        ...base,
+        audit: [
+            { at: now - 1000, type: 'restored', id: '.vscode/tasks.json' },
+            { at: now - 5000, type: 'quarantined', id: '.vscode/tasks.json' }
+        ]
+    });
+    assert.ok(!restored.includes('quarantined recently'));
+    const old = renderPane({ ...base, audit: [{ at: now - 48 * 60 * 60 * 1000, type: 'removed', id: 'old.ext' }] });
+    assert.ok(!old.includes('removed recently'));
 });
 
 test('renderPane disables the scan button while scanning', () => {
@@ -225,4 +296,114 @@ test('computeVerdict picks the right tone and humanize cleans advisory labels', 
     assert.equal(computeVerdict({ runs: [run(0, 0, true)] }).tone, 'warn');
     assert.equal(computeVerdict({ runs: [], scanning: true }).tone, 'busy');
     assert.equal(humanize('CREDENTIAL_THEFT'), 'Credential theft');
+    // A file-only run stores findings: 0. The live total still includes the extension.
+    const mixed = computeVerdict({
+        runs: [run(0, 0)],
+        fileThreats: [{}],
+        threatCount: 2
+    });
+    assert.equal(mixed.title, '2 threats found');
+    assert.equal(mixed.flagged, 2);
+});
+
+// ── Threat names in the hero + Scan log, and "Show more" paging ─────────────
+
+const { describeThreats, activeThreats } = require('../threats');
+
+const flaggedExt = { id: 'bad.ext', packageJSON: { version: '1.2.3' } };
+const advisory = { severity: 'critical', title: 'CREDENTIAL_THEFT' };
+const hookThreat = {
+    displayPath: '.git/hooks/pre-push', severity: 'high',
+    matches: [{ rule: 'REMOTE_PAYLOAD', technique: 'T1105' }]
+};
+
+test('describeThreats names extensions and files in plain English', () => {
+    const list = describeThreats({
+        found: [{ extension: flaggedExt, advisory }],
+        fileThreats: [hookThreat],
+        removedIds: new Set(['bad.ext'])
+    });
+    assert.deepEqual(list[0], { kind: 'extension', name: 'bad.ext@1.2.3', severity: 'critical', why: 'Credential theft', removed: true });
+    assert.deepEqual(list[1], { kind: 'file', name: '.git/hooks/pre-push', severity: 'high', why: 'Remote payload', removed: false });
+});
+
+test('hero names the threat under the warning, only when something is found', () => {
+    const run = { at: 1, installed: 10, findings: 1, removed: 0, details: describeThreats({ found: [{ extension: flaggedExt, advisory }] }) };
+    const base = { status: {}, removed: [], audit: [], allowlist: [], inventory: null, nonce: 'n' };
+
+    const bad = renderParts({ ...base, runs: [run] }).hero;
+    assert.ok(bad.includes('bad.ext@1.2.3') && !bad.includes('Credential theft'), 'hero names the extension and not the threat type');
+    assert.ok(bad.includes('sev sev--critical'), 'a malicious extension shows its severity in red');
+
+    // A file threat with no scan run yet is also named, without the rule label.
+    const fileOnly = renderParts({ ...base, runs: [], fileThreats: [hookThreat] }).hero;
+    assert.ok(fileOnly.includes('.git/hooks/pre-push') && !fileOnly.includes('Remote payload'));
+    assert.ok(fileOnly.includes('sev sev--high'), 'a file threat shows its severity in red');
+    assert.ok(fileOnly.includes('class="eye"') && fileOnly.includes('data-open-section="threats"'), 'the file threat has an eye that opens File threats');
+    assert.ok(fileOnly.includes('data-threat-key=".git/hooks/pre-push"'), 'the eye names the file card to flash');
+    assert.ok(bad.includes('class="eye"') && bad.includes('data-open-section="ext-threats"'), 'the extension threat has an eye that opens Extension threats');
+    assert.ok(bad.includes('data-threat-key="bad.ext@1.2.3"'), 'the eye names the extension card to flash');
+
+    // Clean scan: no threat list.
+    const clean = renderParts({ ...base, runs: [{ at: 1, installed: 10, findings: 0, removed: 0 }] }).hero;
+    assert.ok(!clean.includes('class="found'));
+
+    // Already-removed extensions are not listed as active threats.
+    assert.equal(activeThreats([{ details: [{ kind: 'extension', removed: true }] }], []).length, 0);
+});
+
+test('hero says how many more threats there are beyond the first three', () => {
+    const fileThreats = Array.from({ length: 5 }, (_, i) => ({ ...hookThreat, displayPath: `hook-${i}` }));
+    const hero = renderParts({ status: {}, runs: [], fileThreats, nonce: 'n' }).hero;
+    assert.ok(hero.includes('hook-2') && !hero.includes('hook-3'));
+    assert.ok(hero.includes('+2 more'));
+});
+
+test('hero total includes a live extension and a file threat after a file-only scan', () => {
+    const hero = renderParts({
+        status: {},
+        // A file scan records findings: 0. The extension is still installed.
+        runs: [{ at: 1, installed: 14, findings: 0, removed: 0, fileFindings: 1 }],
+        extensionThreats: [{ id: 'AckeeBlockchain.tools-for-solidity', version: '1.19.4', severity: 'high', title: 'Flagged as malicious by guarddog' }],
+        fileThreats: [hookThreat],
+        nonce: 'n'
+    }).hero;
+    assert.ok(hero.includes('2 threats found'), 'the ring total counts the extension and the file');
+    assert.ok(hero.includes('AckeeBlockchain.tools-for-solidity@1.19.4'));
+    assert.ok(hero.includes('.git/hooks/pre-push'));
+});
+
+test('audit Restore and Revoke sit on the line under the threat type', () => {
+    const { audit } = renderParts({
+        status: {},
+        runs: [],
+        audit: [
+            { at: 2, type: 'quarantined', id: '.vscode/tasks.json', detail: 'critical · REMOTE_PAYLOAD', filePath: '/repo/.vscode/tasks.json', sha256: 'abc' },
+            { at: 1, type: 'file_allowed', id: '.vscode/tasks.json (abc)', sha256: 'abc' }
+        ],
+        allowedFiles: ['abc'],
+        quarantined: [{ filePath: '/repo/.vscode/tasks.json', displayPath: '.vscode/tasks.json', sha256: 'abc', quarantinedPath: '/q/tasks.json' }],
+        nonce: 'n'
+    });
+    assert.match(audit, /evt__line[^>]*>\.vscode\/tasks\.json · critical · REMOTE_PAYLOAD<\/div>\s*<div class="evt__actions">/);
+    assert.match(audit, /<div class="evt__actions"><button[^>]*data-restore-file="[^"]*"[^>]*>Restore<\/button>/);
+    assert.match(audit, /<div class="evt__actions"><button[^>]*data-unallow-file="abc"[^>]*>Revoke<\/button>/);
+    assert.ok(!audit.includes('evt__line mono">.vscode/tasks.json · critical · REMOTE_PAYLOAD<button'), 'the button is not on the threat line');
+});
+
+test('Scan log lists what each run found, and rows are marked for paging', () => {
+    const details = describeThreats({ found: [{ extension: flaggedExt, advisory }], removedIds: new Set(['bad.ext']) });
+    const { runs } = renderParts({ status: {}, runs: [{ at: 1, trigger: 'manual', installed: 5, findings: 1, removed: 1, details }], nonce: 'n' });
+    assert.ok(runs.includes('bad.ext@1.2.3') && runs.includes('Credential theft') && runs.includes('removed'));
+    assert.ok(!runs.includes('class="eye"'), 'a removed finding has no eye');
+    assert.ok(runs.includes('data-row'));
+});
+
+test('pane page has a Show more pager for every list section', () => {
+    const html = renderPane({ status: {}, runs: [], nonce: 'n' });
+    for (const key of ['ext-threats', 'threats', 'runs', 'allowed-extensions', 'allowed-files', 'audit']) {
+        assert.ok(html.includes(`id="more-${key}"`), `${key} has a more-button slot`);
+    }
+    assert.ok(html.includes('const PAGE = 5;'));
+    assert.ok(html.includes('delete state.shown[key]'), 'collapsing a dropdown resets Show more');
 });

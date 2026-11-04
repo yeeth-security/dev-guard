@@ -105,9 +105,11 @@ const PANE_CSS = `
   .hc__summary { font-family: var(--mono); font-size: 10.5px; }
   .hc__row { position: relative; width: 100%; display: grid; grid-template-columns: 20px 1fr auto; align-items: center; gap: 10px; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--hair); background: transparent; text-align: left; }
   .hc__row:last-child { border-bottom: 0; padding-bottom: 2px; }
-  .hc__row[data-harden-arm], .hc__title[for="proxy"] { cursor: pointer; }
+  .hc__row[data-harden-arm], .hc__row[data-open-section], .hc__title[for="proxy"] { cursor: pointer; }
   .hc__row[data-harden-arm] { border-radius: 8px; }
-  .hc__row[data-harden-arm]:hover { background: var(--amber-tint); }
+  .hc__row[data-harden-arm]:hover, .hc__row[data-open-section]:hover { background: var(--amber-tint); }
+  .hc__row[data-open-section] .hc__sub--warn { text-decoration: underline; }
+  .link--inline { font-size: inherit; font-weight: 700; vertical-align: baseline; }
   .hc__row.is-armed { background: var(--green-tint); }
   .hc__icon { display: inline-flex; width: 18px; height: 18px; color: var(--muted); }
   .hc__row--warn .hc__icon { color: var(--amber-deep); }
@@ -153,6 +155,10 @@ const PANE_CSS = `
   summary::before { content: ""; width: 5px; height: 5px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); margin-right: 2px; transition: transform .12s ease; }
   details[open] > summary::before { transform: rotate(45deg); }
   summary .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .section-warn { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 6px; background: var(--amber-tint); color: var(--amber-deep); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: none; }
+  .section-warn:empty { display: none; }
+  summary:has(.section-warn:not(:empty)) { color: var(--amber-deep); }
+  summary:has(.section-warn:not(:empty)) .count { color: var(--amber-deep); font-weight: 700; }
   .empty { margin: 0; color: var(--muted); font-size: 12.5px; }
   .log { position: relative; margin: 0; padding: 0 0 0 16px; list-style: none; }
   .log::before { content: ""; position: absolute; left: 3px; top: 8px; bottom: 8px; width: 1px; background: var(--hair-strong); }
@@ -191,12 +197,48 @@ const PANE_CSS = `
   .link--sm { font-size: 11px; margin-left: 8px; }
   .evt__type { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted); text-align: right; }
   .evt__line { margin-top: 1px; font-size: 11px; color: var(--ink); overflow-wrap: anywhere; }
+  /* Restore and Revoke sit on their own line under the threat type. */
+  .evt__actions { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; }
+  .evt__actions .link--sm { margin-left: 0; }
   .inv { padding: 7px 0; border-bottom: 1px solid var(--hair); }
   .inv:last-child { border-bottom: 0; padding-bottom: 0; }
   .inv__id { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
   .inv__id .ver { font-family: var(--mono); color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
   .inv__src { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .inv__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
+  /* ── Threat lists (hero + scan log) and "Show more" paging ── */
+  [hidden] { display: none !important; }
+  .found { grid-column: 1 / -1; margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  /* Name and eye share the first line. The reason gets the full next line,
+     so a narrow sidebar cannot stack it one letter per line. */
+  .found__row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "sev name eye" "why why why"; align-items: center; column-gap: 6px; row-gap: 2px; font-size: 12px; }
+  .found__row > .sev { grid-area: sev; }
+  .found__name { grid-area: name; font-family: var(--mono); font-weight: 600; font-size: 11.5px; overflow-wrap: break-word; }
+  .found__why { grid-area: why; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+  .found__row > .eye { grid-area: eye; justify-self: end; }
+  /* Hero rows: red severity, red name, eye. One line, name ellipsizes. */
+  .found__row--name { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "sev name eye"; }
+  .found__row--name > .sev { white-space: nowrap; }
+  .found__row--name .found__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--red); }
+  /* Eye on a shown threat. It stays on the right and jumps to the action card. */
+  .eye { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--hair-strong); border-radius: 999px; background: var(--surface); color: var(--ink); cursor: pointer; flex: 0 0 auto; }
+  .eye svg { width: 14px; height: 14px; }
+  .eye:hover { color: var(--amber-deep); border-color: var(--amber); background: var(--amber-tint); }
+  /* Three hard pulses so the action card cannot be missed. */
+  .item.is-flash, .card.is-flash { animation: threat-flash 1.8s ease; }
+  @keyframes threat-flash {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; background: var(--surface-2); border-color: var(--hair); }
+    12%, 40%, 68% { box-shadow: 0 0 0 4px var(--amber); background: var(--amber-tint); border-color: var(--amber-deep); }
+    26%, 54%, 82% { box-shadow: 0 0 0 0 transparent; background: var(--surface-2); border-color: var(--hair); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .item.is-flash, .card.is-flash { animation: none; background: var(--amber-tint); border-color: var(--amber-deep); box-shadow: 0 0 0 3px var(--amber); }
+  }
+  .found__more { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .found--hero { padding-top: 8px; border-top: 1px solid var(--hair); }
+  .more:empty { display: none; }
+  .more { margin-top: 6px; text-align: center; }
+  .more__btn { font-size: 12px; }
   @media (max-width: 239px) {
     .hero { grid-template-columns: 1fr; gap: 8px; }
     .ringwrap { margin: 0 auto; }
