@@ -21,6 +21,7 @@ const {
 const { createMarketplaceProxy } = require('./server');
 const { createSelfUninstallDetector, runUninstallRestore } = require('./uninstall');
 const { readAllowlist, isAllowlisted, addToAllowlist } = require('../allowlist');
+const { openInEditor } = require('../openUrl');
 
 const BLOCK_MODAL_COOLDOWN_MS = 3000;
 const SELF_UNINSTALL_CHECK_MS = 2000;
@@ -171,9 +172,7 @@ function createProxyController({ context, vscodeApi, getAdvisories, audit, telem
                         installed_version: version || 'unknown',
                         registry: reg
                     });
-                    if (reportUrl && vscodeApi.env) {
-                        void vscodeApi.env.openExternal(vscodeApi.Uri.parse(reportUrl));
-                    }
+                    openInEditor(vscodeApi, reportUrl);
                 } else {
                     telemetry?.record('blocked_modal_decision', {
                         ...baseDecisionProps,
@@ -227,9 +226,7 @@ function createProxyController({ context, vscodeApi, getAdvisories, audit, telem
                     registry: registry || 'unknown'
                 });
                 try { onChange?.(); } catch (_e) { /* ignore */ }
-                if (reportUrl && vscodeApi.env && typeof vscodeApi.env.openExternal === 'function') {
-                    void vscodeApi.env.openExternal(vscodeApi.Uri.parse(reportUrl));
-                }
+                openInEditor(vscodeApi, reportUrl);
                 return 'scan';
             }
             audit?.record({ type: 'blocked', id, version, detail: 'unscanned · cancelled' });

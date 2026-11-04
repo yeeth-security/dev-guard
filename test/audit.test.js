@@ -3,7 +3,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { snapshotOf, diffSnapshots, createAuditLog, scanAfterInstall, MAX_AUDIT } = require('../audit');
+const { snapshotOf, diffSnapshots, revokedExtensionIds, createAuditLog, scanAfterInstall, MAX_AUDIT } = require('../audit');
 
 function fakeContext() {
     const store = new Map();
@@ -16,6 +16,19 @@ function fakeContext() {
 }
 
 const ext = (id, version, isBuiltin = false) => ({ id, packageJSON: { version, isBuiltin } });
+
+test('revokedExtensionIds follows the newest allowlist event, not list order', () => {
+    const events = [
+        { at: 1000, type: 'allowed', id: 'AckeeBlockchain.tools-for-solidity' },
+        { at: 500, type: 'blocked', id: 'AckeeBlockchain.tools-for-solidity', detail: 'high · guarddog' },
+        { at: 4000, type: 'installed', id: 'ackeeblockchain.tools-for-solidity' },
+        { at: 3000, type: 'unallowed', id: 'ackeeblockchain.tools-for-solidity' },
+        { at: 2000, type: 'unallowed', id: 'still.ok' },
+        { at: 3500, type: 'allowed', id: 'Still.Ok' }
+    ];
+    assert.deepEqual(revokedExtensionIds(events, new Set()), ['ackeeblockchain.tools-for-solidity']);
+    assert.deepEqual(revokedExtensionIds(events, new Set(['ackeeblockchain.tools-for-solidity'])), []);
+});
 
 test('snapshotOf skips builtins and lower-cases ids', () => {
     const snap = snapshotOf([ext('Pub.One', '1.0.0'), ext('vscode.git', '1.0.0', true), null]);

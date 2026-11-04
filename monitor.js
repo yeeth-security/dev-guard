@@ -79,6 +79,10 @@ function createAdvisoryMonitor(options) {
     let changeTimer = null;
     let disposed = false;
     let inFlight = null;
+    // Set when executeCycle is asked to run while a scan is already going.
+    // That scan may have read settings from before the request (an allowlist
+    // edit, for example), so we run one more cycle as soon as it finishes.
+    let pendingTrigger = null;
     let lastCompletedAt = 0;
     let lastResult = { failureCount: 0, minWaitMs: 0 };
     const disposables = [];
@@ -114,6 +118,7 @@ function createAdvisoryMonitor(options) {
     async function executeCycle(trigger) {
         if (disposed) return;
         if (inFlight) {
+            pendingTrigger = trigger;
             return inFlight;
         }
 
@@ -141,6 +146,9 @@ function createAdvisoryMonitor(options) {
                     random
                 });
                 scheduleNext(nextDelay);
+                const followUp = pendingTrigger;
+                pendingTrigger = null;
+                if (followUp && !disposed) void executeCycle(followUp);
             }
         })();
 

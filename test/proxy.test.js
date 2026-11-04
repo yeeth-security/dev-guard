@@ -22,7 +22,7 @@ const {
     restoreProxyMarketplaceConfig
 } = require('../proxy/config');
 const { ASSET_README, ASSET_MANIFEST, ASSET_VSIX, createMarketplaceProxy } = require('../proxy/server');
-const { buildPkgscanUrls, resolveRepositoryUrl } = require('../proxy/readme');
+const { buildPkgscanUrls, resolveRepositoryUrl, formatScanHeader, collectEngineThreats } = require('../proxy/readme');
 const {
     writeUninstallRestoreManifest,
     createSelfUninstallDetector,
@@ -61,6 +61,7 @@ function createFakeEnv(initialSettings = {}) {
     const vscodeApi = {
         ConfigurationTarget: { Global: 1 },
         env: { appName: 'Cursor', appRoot: '/nonexistent' },
+        commands: { executeCommand: async () => {} },
         Uri: { parse: u => u },
         window: {
             showWarningMessage: (msg, ...btns) => {
@@ -135,6 +136,59 @@ test('proxy config updates marketplace to local proxy and restores original sett
     await restoreProxyMarketplaceConfig(context, vscodeApi);
     assert.equal(settings['extensions.gallery.serviceUrl'], 'https://open-vsx.org/vscode/gallery');
     assert.equal(settings['devGuard.marketplace'], 'https://open-vsx.org/vscode/gallery');
+});
+
+test('revoking an allowlisted engine-scan package produces a live finding', async () => {
+    const ext = { id: 'AckeeBlockchain.tools-for-solidity', packageJSON: { version: '1.19.4' } };
+    const scan = {
+        status: 'completed',
+        flaggedCount: 1,
+        engines: [{ id: 'guarddog', verdict: 'block', findingCount: 16 }]
+    };
+    const { threats, retry } = await collectEngineThreats({
+        ids: ['ackeeblockchain.tools-for-solidity'],
+        extensions: [ext],
+        allowlist: new Set(),
+        skipIds: new Set(),
+        registry: 'cursor-marketplace',
+        getScanData: async () => scan
+    });
+    assert.equal(retry.length, 0);
+    assert.equal(threats.length, 1);
+    assert.equal(threats[0].extension, ext);
+    assert.match(threats[0].advisory.title, /guarddog/);
+
+    // Still allowlisted, or already matched by the advisory feed: no second finding.
+    const quiet = await collectEngineThreats({
+        ids: ['ackeeblockchain.tools-for-solidity'],
+        extensions: [ext],
+        allowlist: new Set(['ackeeblockchain.tools-for-solidity']),
+        skipIds: new Set(),
+        getScanData: async () => scan
+    });
+    assert.equal(quiet.threats.length, 0);
+});
+
+test('README injection is a GitHub alert without START/END headings', () => {
+    const clean = formatScanHeader({
+        publisher: 'good', name: 'clean-ext', version: '1.0.0',
+        scan: { status: 'completed', flaggedCount: 0, analyzedAt: '2026-11-01', engines: [{ id: 'argus', verdict: 'pass', status: 'done', findingCount: 0 }] }
+    });
+    assert.ok(clean.includes('It is **not** part of the publisher\'s README.'));
+    assert.ok(clean.includes('The publisher\'s original README starts below this line.'));
+    assert.ok(clean.includes('[!NOTE]'), 'a finished clean scan is a note alert');
+    assert.ok(!clean.includes('START of injected scan data'));
+    assert.ok(!clean.includes('END of injected scan data'));
+
+    const flagged = formatScanHeader({
+        publisher: 'evil', name: 'bad-ext', version: '9.9.9',
+        advisory: { severity: 'critical', title: 'TOKEN_STEALER', permalink: 'https://www.pkgscan.dev/x' }
+    });
+    assert.ok(flagged.includes('[DEV-GUARD SECURITY ADVISORY — CRITICAL]'));
+    assert.ok(flagged.includes('[!CAUTION]'), 'a flagged extension is a caution alert');
+    assert.ok(flagged.includes('> > [!CAUTION]'), 'the advisory is its own box inside the scan alert');
+    assert.ok(!flagged.includes('START of injected scan data'));
+    assert.ok(!flagged.includes('END of injected scan data'));
 });
 
 test('proxy rewrites extensionquery, injects scan data into README, and blocks flagged VSIX downloads', async () => {
@@ -267,12 +321,16 @@ test('proxy rewrites extensionquery, injects scan data into README, and blocks f
         const cleanReadme = await cleanReadmeRes.text();
         assert.ok(cleanReadme.includes('**pkgscan.dev Security Scan** — **No malware engines flagged**'));
         assert.ok(cleanReadme.includes('| `argus` | Clean (pass) | 0 |'));
+        assert.ok(!cleanReadme.includes('START of injected scan data'));
+        assert.ok(!cleanReadme.includes('END of injected scan data'));
+        assert.ok(cleanReadme.includes('[!NOTE]'));
         assert.ok(cleanReadme.includes('# Original Extension Readme'));
 
         // 3. Fetch README for flagged extension: advisory banner injected at the top.
         const badReadmeRes = await fetch(`${badExt.versions[0].assetUri}/${ASSET_README}`);
         const badReadme = await badReadmeRes.text();
         assert.ok(badReadme.includes('[DEV-GUARD SECURITY ADVISORY — CRITICAL]'));
+        assert.ok(badReadme.includes('[!CAUTION]'));
         assert.ok(badReadme.includes('Download blocked by Dev-Guard.'));
 
         // 4. Attempt VSIX download for flagged extension -> HTTP 403 Forbidden.
@@ -956,8 +1014,31 @@ test('uninstall hook and self-uninstall detector revert marketplace settings in 
     assert.equal(updatedProduct.extensionsGallery.extensionUrlTemplate, 'https://www.vscode-unpkg.net/_gallery/{publisher}/{name}/latest');
     assert.equal(updatedProduct.extensionsGallery._devGuardOriginalServiceUrl, undefined);
 
-    // 4. Verify `restoreMarketplaceSettingsFile` is a no-op when settings do not point to a loopback URL.
+    // 4. Verify `restoreMarketplaceSettingsFile` is a no-op when settings do not point to a loopback URL,
+    //    and a second `runUninstallRestore` call (e.g. during IDE shutdown/update) is an immediate no-op
+    //    because `uninstall-restore.json` was marked `restored: true`.
     assert.equal(restoreMarketplaceSettingsFile(settingsPath, {}, fakeIo), false);
+    assert.equal(runUninstallRestore({
+        context: fakeContext,
+        restoreProductJsonGallery: () => { throw new Error('must not touch appRoot after restored: true'); },
+        userDirs: [userDir],
+        io: fakeIo
+    }), false);
+
+    // 5. When `usedProductJson: false` (e.g. Cursor), `appRoot` is never touched during uninstall restore.
+    writeUninstallRestoreManifest(fakeContext, fakeVscode, {
+        usedProductJson: false,
+        savedGalleryServiceUrl: '',
+        savedDevGuardMarketplace: ''
+    }, fakeIo);
+    let touchedProductJson = false;
+    runUninstallRestore({
+        context: fakeContext,
+        restoreProductJsonGallery: () => { touchedProductJson = true; return true; },
+        userDirs: [userDir],
+        io: fakeIo
+    });
+    assert.equal(touchedProductJson, false, 'Cursor uninstall must never touch appRoot product.json');
 });
 
 test('proxy server unrefs listening socket and closes keep-alive connections immediately on shutdown', async () => {

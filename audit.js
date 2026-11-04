@@ -120,6 +120,35 @@ function diffSnapshots(previous, current, now, lastEventFor = () => null) {
     return events;
 }
 
+/**
+ * Extension ids that should be checked against the pkgscan engine scan.
+ * The advisory feed does not list every blocked package. After the user
+ * revokes an allowance, the next scan (including after a reload) still needs
+ * to know which installed ids left the allowlist.
+ *
+ * The newest allowlist event wins. `unallowed` and `blocked` count.
+ * `allowed` does not, and an id that is on the allowlist right now does not.
+ * Other events (installed, scanned) are ignored. Order of `events` does not matter.
+ */
+function revokedExtensionIds(events, allowlist) {
+    const allow = allowlist instanceof Set ? allowlist : new Set();
+    const latest = new Map();
+    const sorted = (Array.isArray(events) ? events : [])
+        .filter(event => event && (event.type === 'allowed' || event.type === 'unallowed' || event.type === 'blocked'))
+        .sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const event of sorted) {
+        const id = String(event.id || '').toLowerCase();
+        if (!id || latest.has(id)) continue;
+        latest.set(id, event.type);
+    }
+    const ids = [];
+    for (const [id, type] of latest) {
+        if (type === 'allowed' || allow.has(id)) continue;
+        ids.push(id);
+    }
+    return ids;
+}
+
 function createAuditLog(context, options = {}) {
     const listeners = new Set();
     const emit = () => listeners.forEach(fn => { try { fn(); } catch (_e) { /* ignore */ } });
@@ -183,4 +212,4 @@ async function scanAfterInstall(monitor, audit, added) {
     }
 }
 
-module.exports = { AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, snapshotOf, diffSnapshots, createAuditLog, scanAfterInstall };
+module.exports = { AUDIT_KEY, SNAPSHOT_KEY, MAX_AUDIT, snapshotOf, diffSnapshots, revokedExtensionIds, createAuditLog, scanAfterInstall };

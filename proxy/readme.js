@@ -8,7 +8,9 @@
  *   We intercept that request and prepend a compact security summary from
  *   `pkgscan.dev/api/pkg/vscode-extension/...` plus a prominent warning
  *   banner when the extension matches a security advisory or a blocking scan
- *   verdict.
+ *   verdict. The whole block is a GitHub alert (`[!NOTE]`, `[!WARNING]`,
+ *   or `[!CAUTION]`). A flagged extension also gets a nested caution box.
+ *   START/END headings are not used.
  *
  * Underlying marketplace & PURL accuracy:
  *   - Extensions served from Open VSX (`open-vsx.org`) or Cursor's Open VSX
@@ -76,6 +78,7 @@ function buildPkgscanUrls({ publisher, name, version, registry, assetBaseUrl, ba
 async function fetchJsonQuick(url, { fetchImpl = fetch, timeoutMs = SCAN_TIMEOUT_MS } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (typeof timer?.unref === 'function') timer.unref();
     try {
         const res = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: controller.signal });
         return res && res.ok ? await res.json() : null;
@@ -152,6 +155,55 @@ function scanBlockAdvisory(scan, { publisher, name, version, registry, assetBase
     };
 }
 
+/**
+ * Turns revoked allowlist ids into live findings when pkgscan's engine scan
+ * flagged them. The advisory feed does not list every blocked package
+ * (Ackee's tools-for-solidity is one of those), so a revoke would otherwise
+ * leave the next scan silent.
+ * `skipIds` are extensions the advisory match already found.
+ * `retry` are ids whose scan did not finish, so the caller should ask again.
+ */
+async function collectEngineThreats({ ids, extensions, allowlist, skipIds, registry, getScanData }) {
+    const allow = allowlist instanceof Set ? allowlist : new Set();
+    const skip = skipIds instanceof Set ? skipIds : new Set();
+    const byId = new Map();
+    for (const ext of Array.isArray(extensions) ? extensions : []) {
+        if (ext && ext.id) byId.set(String(ext.id).toLowerCase(), ext);
+    }
+    const threats = [];
+    const retry = [];
+    // Completed lookups. The caller can remember a clean result and not ask again.
+    const checked = [];
+    for (const raw of Array.isArray(ids) ? ids : []) {
+        const id = String(raw || '').toLowerCase();
+        if (!id || allow.has(id) || skip.has(id)) continue;
+        const ext = byId.get(id);
+        if (!ext) continue;
+        const dot = id.indexOf('.');
+        if (dot <= 0) continue;
+        const publisher = id.slice(0, dot);
+        const name = id.slice(dot + 1);
+        const version = ext.packageJSON && ext.packageJSON.version;
+        let scan = null;
+        try {
+            scan = typeof getScanData === 'function'
+                ? await getScanData({ publisher, name, version, registry })
+                : null;
+        } catch (_error) {
+            scan = null;
+        }
+        // A failed or unfinished lookup is not "clean". Ask again next scan.
+        if (!scan || scan.status !== 'completed') {
+            retry.push(id);
+            continue;
+        }
+        checked.push(id);
+        const advisory = scanBlockAdvisory(scan, { publisher, name, version, registry });
+        if (advisory) threats.push({ extension: ext, advisory });
+    }
+    return { threats, retry, checked };
+}
+
 function formatEngineVerdict(engine) {
     const v = String(engine && engine.verdict || '').toLowerCase();
     if (v === 'block' || v === 'malicious' || v === 'fail') return 'Malicious (block)';
@@ -160,28 +212,46 @@ function formatEngineVerdict(engine) {
     return engine && engine.status ? String(engine.status) : 'n/a';
 }
 
+/** Prefixes each line so the whole injection sits inside one GitHub alert box. */
+function asAlert(kind, lines) {
+    return [`> [!${kind}]`, ...lines.map(line => (line === '' ? '>' : `> ${line}`))].join('\n');
+}
+
+/** Nested alert lines. After `asAlert` wraps them they become `> > [!KIND]`. */
+function nestedAlert(kind, lines) {
+    return [`> [!${kind}]`, ...lines.map(line => (line === '' ? '>' : `> ${line}`))];
+}
+
 function formatScanHeader({ publisher, name, version, registry, assetBaseUrl, scan, advisory, allowlisted = false, baseUrl = DEFAULT_PKGSCAN_BASE_URL }) {
     const urls = buildPkgscanUrls({ publisher, name, version, registry, assetBaseUrl, baseUrl });
     const effectiveAdv = advisory || scanBlockAdvisory(scan, { publisher, name, version, registry, assetBaseUrl, baseUrl });
     // Always use `urls.reportUrl` for the package page link so the `repository_url`
     // query parameter matches the underlying marketplace when submitting/viewing a scan.
     const reportUrl = urls.reportUrl;
+    const extId = `${publisher}.${name}${version ? `@${version}` : ''}`;
 
-    const lines = [];
+    // One alert around the injected block. A threat gets a second box inside it.
+    const body = [
+        'This block is added by [Yeeth Dev-Guard](https://yeethsecurity.com). It is **not** part of the publisher\'s README.'
+    ];
+
     if (effectiveAdv) {
         const sev = String(effectiveAdv.severity || 'high').toUpperCase();
         const title = effectiveAdv.title ? String(effectiveAdv.title).replace(/[_-]+/g, ' ') : 'Malicious extension advisory';
         const statusNote = allowlisted
             ? 'This extension is on your `devGuard.allowlist`, so downloads are permitted.'
             : '**Download blocked by Dev-Guard.** This extension remains visible in search results, but VSIX downloads are blocked.';
-        lines.push(
-            `> ### [DEV-GUARD SECURITY ADVISORY — ${sev}]`,
-            `> **${publisher}.${name}${version ? `@${version}` : ''}** was flagged on [pkgscan.dev](${reportUrl}): **${title}**.`,
-            `> ${statusNote}`, ''
+        body.push(
+            '',
+            ...nestedAlert('CAUTION', [
+                `### [DEV-GUARD SECURITY ADVISORY — ${sev}]`,
+                `**${extId}** was flagged on [pkgscan.dev](${reportUrl}): **${title}**.`,
+                statusNote
+            ])
         );
     }
 
-    lines.push(`[![pkgscan.dev](${urls.badgeUrl})](${reportUrl})`, '');
+    body.push('', `[![pkgscan.dev](${urls.badgeUrl})](${reportUrl})`, '');
     if (scan && scan.status === 'completed') {
         const engines = (Array.isArray(scan.engines) ? scan.engines : []).filter(e => e && e.status !== 'unsupported');
         const flagged = Number(scan.flaggedCount) || 0;
@@ -192,21 +262,28 @@ function formatScanHeader({ publisher, name, version, registry, assetBaseUrl, sc
             ? `**Flagged** (${flagged || 1} malware engine alert)`
             : `**No malware engines flagged** (${engines.length} engines checked)`;
 
-        lines.push(`**pkgscan.dev Security Scan** — ${headline} · v${scannedVer} · Analyzed ${analyzedDate}${shaShort} · PURL \`${urls.purl}\` · [Full report ↗](${reportUrl})`);
+        body.push(`**pkgscan.dev Security Scan** — ${headline} · v${scannedVer} · Analyzed ${analyzedDate}${shaShort} · PURL \`${urls.purl}\` · [Full report ↗](${reportUrl})`);
         if (engines.length > 0) {
-            lines.push('', '| Engine | Verdict | Findings |', '| :--- | :--- | :--- |');
+            body.push('', '| Engine | Verdict | Findings |', '| :--- | :--- | :--- |');
             for (const eng of engines) {
-                lines.push(`| \`${eng.id}\` | ${formatEngineVerdict(eng)} | ${Number(eng.findingCount) || 0} |`);
+                body.push(`| \`${eng.id}\` | ${formatEngineVerdict(eng)} | ${Number(eng.findingCount) || 0} |`);
             }
         }
     } else {
         const stateLabel = scan && scan.status ? scan.status : 'unscanned';
         const verdictNote = effectiveAdv ? '**Flagged by pkgscan.dev advisory**' : 'No active malicious advisory';
-        lines.push(`**pkgscan.dev Security Scan** — ${verdictNote} · Scan status: \`${stateLabel}\` · PURL \`${urls.purl}\` · [Scan on pkgscan.dev ↗](${reportUrl})`);
+        body.push(`**pkgscan.dev Security Scan** — ${verdictNote} · Scan status: \`${stateLabel}\` · PURL \`${urls.purl}\` · [Scan on pkgscan.dev ↗](${reportUrl})`);
     }
 
-    lines.push('', '---', '');
-    return lines.join('\n');
+    body.push(
+        '',
+        'The publisher\'s original README starts below this line.'
+    );
+
+    // A flagged package is a caution. A finished clean scan is a note.
+    // Anything we could not scan is a warning.
+    const outer = effectiveAdv ? 'CAUTION' : (scan && scan.status === 'completed' ? 'NOTE' : 'WARNING');
+    return `${asAlert(outer, body)}\n\n---\n\n`;
 }
 
 function injectReadmeScanData(originalReadme, options) {
@@ -220,6 +297,7 @@ module.exports = {
     buildPkgscanUrls,
     createScanFetcher,
     scanBlockAdvisory,
+    collectEngineThreats,
     formatScanHeader,
     injectReadmeScanData
 };
