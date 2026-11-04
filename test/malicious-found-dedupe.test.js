@@ -21,7 +21,8 @@ const fakeVscode = {
         // Warn mode: the notifier only shows a toast. Nothing is uninstalled.
         getConfiguration: () => ({ get: (key, fallback) => (key === 'removalMode' ? 'warn' : fallback) })
     },
-    window: { showWarningMessage: () => Promise.resolve(undefined), showInformationMessage: () => Promise.resolve(undefined) },
+    // Leave the toast open. Resolving with no choice would show it again.
+    window: { showErrorMessage: () => new Promise(() => {}), showInformationMessage: () => Promise.resolve(undefined) },
     env: { appRoot: os.tmpdir(), appName: 'Test', uriScheme: 'test' },
     commands: {},
     Uri: {}

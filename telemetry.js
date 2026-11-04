@@ -1,11 +1,23 @@
 /**
- * Anonymous usage telemetry for dev-guard.
+ * Anonymous usage and security telemetry for dev-guard.
  *
- * Enabled by default (opt-out), but every send is gated on both VS Code's
- * global telemetry setting and the `devGuard.telemetry.enabled` setting.
- * Coarse counts, timing buckets, and source health are sent, plus the ID and
- * installed version of any extension that was blocked — never file paths or
- * machine identifiers.
+ * Why this file exists:
+ *   Gives us aggregate, per-install (`installId`) insight into what protects
+ *   users in the field — such as editor health check posture, blocked malicious
+ *   downloads, unscanned extension warnings/refusals, and pkgscan.dev report
+ *   views — without ever collecting file paths or machine identifiers, and
+ *   without blasting duplicate state events to the server.
+ *
+ * Deduplication model:
+ *   - `recordState(stateKey, name, props)`: Persists a hash of `props` in
+ *     `globalState` and only queues an event when a user's state actually
+ *     changes (e.g., when they fix a health check item or toggle the proxy).
+ *   - `recordOnce(dedupKey, name, props, ttlMs)`: Suppresses repeat events
+ *     within `ttlMs` (e.g., viewing the same flagged README or daily heartbeats)
+ *     so open windows never flood the server.
+ *   - `record(name, props)`: Queues discrete user actions and schedules a
+ *     debounced background flush so interactive security decisions are sent
+ *     promptly without waiting for the next 5-minute poll.
  */
 
 const vscode = require('vscode');
@@ -15,26 +27,23 @@ const os = require('os');
 const DEFAULT_ENDPOINT = 'https://www.pkgscan.dev/api/telemetry/dev-guard';
 const INSTALL_ID_KEY = 'devGuard.installId';
 const NOTICE_KEY = 'devGuard.telemetryNoticeVersion';
+const STATE_HASHES_KEY = 'devGuard.telemetryStateHashes';
+const COOLDOWNS_KEY = 'devGuard.telemetryCooldowns';
 const NOTICE_VERSION = 1;
 const MAX_QUEUE = 25;
 const MAX_STRING = 64;
 const MAX_PROPS = 12;
 const FLUSH_TIMEOUT_MS = 5000;
+const DEFAULT_AUTO_FLUSH_MS = 2000;
+const DEFAULT_ONCE_TTL_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Strict formats for string props that carry identifiers, so a bug elsewhere
- * cannot smuggle free-form text (display names, paths) into a payload.
- */
+/** Strict validators for identifier props so free-form text cannot leak. */
 const PROP_VALUE_VALIDATORS = {
     extension_id: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
     installed_version: /^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/
 };
 
-/**
- * Buckets a count so raw inventory sizes are not transmitted.
- * @param {number} value
- * @returns {string}
- */
+/** Buckets an extension count so raw inventory sizes are not transmitted. */
 function bucketCount(value) {
     if (value <= 0) return '0';
     if (value <= 10) return '1-10';
@@ -44,11 +53,7 @@ function bucketCount(value) {
     return '100+';
 }
 
-/**
- * Buckets an audit duration.
- * @param {number} ms
- * @returns {string}
- */
+/** Buckets an audit duration into coarse latency bands. */
 function bucketDuration(ms) {
     if (ms < 250) return '<250ms';
     if (ms < 1000) return '250ms-1s';
@@ -56,20 +61,14 @@ function bucketDuration(ms) {
     return '>5s';
 }
 
-/**
- * Drops anything that could leak free-form data.
- * @param {Record<string, unknown>|undefined} props
- * @returns {Record<string, string|number|boolean>}
- */
+/** Strips unknown types and enforces strict key/value bounds on event props. */
 function sanitizeProps(props) {
     const cleaned = {};
     if (!props) return cleaned;
-
     let count = 0;
     for (const [key, value] of Object.entries(props)) {
         if (count >= MAX_PROPS) break;
         if (!/^[a-z0-9_]{1,40}$/.test(key)) continue;
-
         if (typeof value === 'boolean') {
             cleaned[key] = value;
         } else if (typeof value === 'number' && Number.isFinite(value)) {
@@ -87,198 +86,179 @@ function sanitizeProps(props) {
     return cleaned;
 }
 
-/**
- * @param {vscode.ExtensionContext} context
- * @returns {string} Stable pseudonymous install ID
- */
+/** Builds a deterministic string fingerprint from sanitized props for state deduplication. */
+function stateFingerprint(props) {
+    const cleaned = sanitizeProps(props);
+    return Object.keys(cleaned).sort().map(k => `${k}=${String(cleaned[k])}`).join('&');
+}
+
 function getOrCreateInstallId(context) {
     try {
         const existing = context.globalState.get(INSTALL_ID_KEY);
-        if (typeof existing === 'string' && existing.length > 0) {
-            return existing;
-        }
+        if (typeof existing === 'string' && existing.length > 0) return existing;
     } catch (error) {
         console.warn('Could not read telemetry install ID:', error);
     }
-
     const installId = crypto.randomUUID();
-    try {
-        void context.globalState.update(INSTALL_ID_KEY, installId);
-    } catch (error) {
-        console.warn('Could not persist telemetry install ID:', error);
-    }
+    try { void context.globalState.update(INSTALL_ID_KEY, installId); }
+    catch (error) { console.warn('Could not persist telemetry install ID:', error); }
     return installId;
 }
 
-/**
- * @param {vscode.ExtensionContext} context
- * @returns {{record: Function, flush: Function, showNoticeOnce: Function}}
- */
-function createTelemetry(context) {
+function readStateMap(context, key) {
+    try {
+        const raw = context && context.globalState ? context.globalState.get(key) : null;
+        return raw && typeof raw === 'object' ? { ...raw } : {};
+    } catch (_error) {
+        return {};
+    }
+}
+
+function writeStateMap(context, key, value) {
+    try {
+        if (context && context.globalState) void context.globalState.update(key, value);
+    } catch (_error) { /* ignore storage errors */ }
+}
+
+function createTelemetry(context, options = {}) {
+    const vscodeApi = options.vscodeApi || vscode;
+    const fetchImpl = options.fetchImpl || fetch;
+    const nowFn = options.now || Date.now;
+    const autoFlushMs = options.autoFlushMs !== undefined ? options.autoFlushMs : DEFAULT_AUTO_FLUSH_MS;
     const endpoint = process.env.DEV_GUARD_TELEMETRY_URL || DEFAULT_ENDPOINT;
     const installId = getOrCreateInstallId(context);
     const sessionId = crypto.randomUUID();
     const queue = [];
-
-    const extensionPackage = context.extension && context.extension.packageJSON
-        ? context.extension.packageJSON
-        : {};
+    const extensionPackage = (context.extension && context.extension.packageJSON) || {};
 
     let flushPromise = null;
     let noticePromise = null;
+    let autoFlushTimer = null;
+    let activeController = null;
+    let disposed = false;
 
     function isEnabled() {
+        if (disposed) return false;
         try {
-            if (typeof vscode.env.isTelemetryEnabled === 'boolean' && !vscode.env.isTelemetryEnabled) {
-                return false;
-            }
-            const configured = vscode.workspace
-                .getConfiguration('devGuard')
-                .get('telemetry.enabled', true);
-            return configured !== false;
+            if (typeof vscodeApi.env.isTelemetryEnabled === 'boolean' && !vscodeApi.env.isTelemetryEnabled) return false;
+            return vscodeApi.workspace.getConfiguration('devGuard').get('telemetry.enabled', true) !== false;
         } catch (error) {
             console.warn('Could not read telemetry setting:', error);
             return false;
         }
     }
 
-    /**
-     * @param {string} name
-     * @param {Record<string, unknown>} [props]
-     */
-    function record(name, props) {
-        if (!isEnabled() || queue.length >= MAX_QUEUE) {
-            return;
-        }
-        queue.push({
-            name,
-            props: sanitizeProps(props),
-            ts: Date.now()
-        });
+    function scheduleAutoFlush() {
+        if (autoFlushMs <= 0 || autoFlushTimer) return;
+        autoFlushTimer = setTimeout(() => {
+            autoFlushTimer = null;
+            void flush();
+        }, autoFlushMs);
+        if (typeof autoFlushTimer.unref === 'function') autoFlushTimer.unref();
     }
 
-    /**
-     * Sends the queued events, if telemetry is enabled. Never throws and
-     * never blocks the audit.
-     * @returns {Promise<void>}
-     */
+    function record(name, props) {
+        if (!isEnabled() || queue.length >= MAX_QUEUE) return false;
+        queue.push({ name, props: sanitizeProps(props), ts: nowFn() });
+        scheduleAutoFlush();
+        return true;
+    }
+
+    /** Records an event only when the user's state for `stateKey` has changed since last reported. */
+    function recordState(stateKey, name, props) {
+        if (!isEnabled() || !stateKey) return false;
+        const fp = stateFingerprint(props);
+        const hashes = readStateMap(context, STATE_HASHES_KEY);
+        if (hashes[stateKey] === fp) return false;
+        if (!record(name, props)) return false;
+        hashes[stateKey] = fp;
+        writeStateMap(context, STATE_HASHES_KEY, hashes);
+        return true;
+    }
+
+    /** Records an event at most once per `ttlMs` window for `dedupKey`. */
+    function recordOnce(dedupKey, name, props, ttlMs = DEFAULT_ONCE_TTL_MS) {
+        if (!isEnabled() || !dedupKey) return false;
+        const now = nowFn();
+        const cooldowns = readStateMap(context, COOLDOWNS_KEY);
+        const lastAt = Number(cooldowns[dedupKey]) || 0;
+        if (lastAt > 0 && (now - lastAt) < ttlMs) return false;
+        if (!record(name, props)) return false;
+        // Prune expired entries when the cooldown map grows beyond 100 keys.
+        const keys = Object.keys(cooldowns);
+        if (keys.length >= 100) {
+            for (const k of keys) {
+                if ((now - (Number(cooldowns[k]) || 0)) >= DEFAULT_ONCE_TTL_MS) delete cooldowns[k];
+            }
+        }
+        cooldowns[dedupKey] = now;
+        writeStateMap(context, COOLDOWNS_KEY, cooldowns);
+        return true;
+    }
+
     function flush() {
-        if (!isEnabled()) {
-            queue.length = 0;
-            return Promise.resolve();
-        }
-        if (flushPromise) {
-            return flushPromise;
-        }
+        if (autoFlushTimer) { clearTimeout(autoFlushTimer); autoFlushTimer = null; }
+        if (!isEnabled()) { queue.length = 0; return Promise.resolve(); }
+        if (flushPromise) return flushPromise;
 
         flushPromise = (async () => {
-            // On first run, give the user a few seconds to act on the
-            // disclosure before the first batch leaves the machine.
-            if (noticePromise) {
-                const notice = noticePromise;
-                noticePromise = null;
-                await notice;
-                if (!isEnabled()) {
-                    queue.length = 0;
-                    return;
-                }
-            }
-
-            if (queue.length === 0) {
-                return;
-            }
+            if (queue.length === 0) return;
 
             const events = queue.splice(0, MAX_QUEUE);
             const payload = {
-                v: 1,
-                installId,
-                sessionId,
+                v: 1, installId, sessionId,
                 extension: {
                     version: extensionPackage.version || 'unknown',
-                    appName: vscode.env.appName || 'unknown',
-                    appHost: vscode.env.appHost || 'unknown',
-                    uiKind: vscode.UIKind && vscode.env.uiKind === vscode.UIKind.Web ? 'web' : 'desktop',
-                    vscodeVersion: vscode.version || 'unknown',
+                    appName: vscodeApi.env.appName || 'unknown',
+                    appHost: vscodeApi.env.appHost || 'unknown',
+                    uiKind: vscodeApi.UIKind && vscodeApi.env.uiKind === vscodeApi.UIKind.Web ? 'web' : 'desktop',
+                    vscodeVersion: vscodeApi.version || 'unknown',
                     os: os.platform()
                 },
                 events
             };
-
             const controller = new AbortController();
+            activeController = controller;
             const timer = setTimeout(() => controller.abort(), FLUSH_TIMEOUT_MS);
-
+            if (typeof timer.unref === 'function') timer.unref();
             try {
-                const response = await fetch(endpoint, {
+                const response = await fetchImpl(endpoint, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify(payload),
                     signal: controller.signal
                 });
-                if (!response.ok) {
-                    console.warn(`Telemetry request failed: ${response.status}`);
-                }
+                if (!response.ok) console.warn(`Telemetry request failed: ${response.status}`);
             } catch (error) {
-                console.warn('Telemetry request failed:', error && error.name ? error.name : error);
+                if (!disposed) {
+                    console.warn('Telemetry request failed:', error && error.name ? error.name : error);
+                }
             } finally {
                 clearTimeout(timer);
+                if (activeController === controller) activeController = null;
             }
-        })().finally(() => {
-            flushPromise = null;
-        });
-
+        })().finally(() => { flushPromise = null; });
         return flushPromise;
     }
 
+    /** No-op: telemetry is documented in Settings (`devGuard.telemetry.enabled`) to avoid startup popup noise. */
+    function showNoticeOnce() {}
+
     /**
-     * Shows the opt-out disclosure once. Never shown when telemetry is off.
+     * Synchronously cancels pending timers and aborts any in-flight request so
+     * telemetry never delays Extension Host shutdown or editor updates.
      */
-    function showNoticeOnce() {
-        if (!isEnabled()) {
-            return;
+    function dispose() {
+        disposed = true;
+        queue.length = 0;
+        if (autoFlushTimer) { clearTimeout(autoFlushTimer); autoFlushTimer = null; }
+        if (activeController) {
+            try { activeController.abort(); } catch (_e) { /* ignore */ }
+            activeController = null;
         }
-        try {
-            if (context.globalState.get(NOTICE_KEY) === NOTICE_VERSION) {
-                return;
-            }
-            void context.globalState.update(NOTICE_KEY, NOTICE_VERSION);
-        } catch (error) {
-            console.warn('Could not read telemetry notice state:', error);
-        }
-
-        noticePromise = new Promise(resolve => {
-            const timer = setTimeout(resolve, 5000);
-            const settle = () => {
-                clearTimeout(timer);
-                resolve();
-            };
-
-            vscode.window.showInformationMessage(
-                'dev-guard sends pseudonymous usage stats to improve the extension. When a malicious extension is found, its ID and version are reported. No file paths are collected.',
-                'Learn more',
-                'Disable telemetry'
-            ).then(selection => {
-                if (selection === 'Disable telemetry') {
-                    const target = vscode.ConfigurationTarget
-                        ? vscode.ConfigurationTarget.Global
-                        : true;
-                    void vscode.workspace
-                        .getConfiguration('devGuard')
-                        .update('telemetry.enabled', false, target);
-                } else if (selection === 'Learn more') {
-                    void vscode.env.openExternal(
-                        vscode.Uri.parse('https://github.com/yeeth-security/dev-guard#telemetry')
-                    );
-                }
-                settle();
-            }, settle);
-        });
     }
 
-    return { record, flush, showNoticeOnce };
+    return { record, recordState, recordOnce, flush, showNoticeOnce, dispose };
 }
 
-module.exports = {
-    createTelemetry,
-    bucketCount,
-    bucketDuration
-};
+module.exports = { createTelemetry, bucketCount, bucketDuration, sanitizeProps, stateFingerprint };

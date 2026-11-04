@@ -92,20 +92,47 @@ function ringSvg({ flagged = 0, checked = 0, tone = 'idle' }) {
 }
 
 /**
- * Turns the latest run + sync status into the headline verdict.
+ * Turns the latest run + the threats still open into the headline verdict.
  * Tones: ok | bad | warn | idle | busy
+ *
+ * `threatCount` is the live total (extensions still installed, plus file
+ * threats). A later file-only scan records `findings: 0`, so the newest run
+ * alone cannot be the total — that dropped an extension that was still there.
  */
-function computeVerdict({ status = {}, runs = [], scanning = false }) {
+function computeVerdict({ status = {}, runs = [], fileThreats = [], threatCount, scanning = false }) {
     if (scanning) return { tone: 'busy', title: 'Scanning…', sub: 'Checking against advisories', flagged: 0, checked: 0 };
+    const activeFiles = Array.isArray(fileThreats) ? fileThreats.length : 0;
     const last = runs[0];
-    if (!last) return { tone: 'idle', title: 'Not scanned yet', sub: 'Run a scan to check your extensions', flagged: 0, checked: 0 };
+    const plural = n => (n === 1 ? 'threat' : 'threats');
+    // Callers that already built the hero list pass its length. Otherwise
+    // fall back to the latest run plus any file threats.
+    const liveTotal = Number.isFinite(threatCount) ? threatCount : null;
+
+    if (!last) {
+        const count = liveTotal !== null ? liveTotal : activeFiles;
+        if (count > 0) {
+            return {
+                tone: 'bad',
+                title: `${count} ${plural(count)} found`,
+                sub: '.vscode file threat detected',
+                flagged: count,
+                checked: count,
+                pendingReload: 0
+            };
+        }
+        return { tone: 'idle', title: 'Not scanned yet', sub: 'Run a scan to check your extensions', flagged: 0, checked: 0 };
+    }
 
     // Keep sublines short: the sidebar is ~300px wide and this must stay on one line.
     const when = fmtClock(last.at);
-    const open = Math.max(0, (last.findings || 0) - (last.removed || 0));
-    const plural = n => (n === 1 ? 'threat' : 'threats');
+    const fromRun = Math.max(0, (last.findings || 0) - (last.removed || 0)) + activeFiles;
+    const open = liveTotal !== null ? liveTotal : fromRun;
 
-    const base = { flagged: last.findings || 0, checked: last.installed || 0, pendingReload: 0 };
+    const base = {
+        flagged: open,
+        checked: (last.installed || 0) + activeFiles,
+        pendingReload: 0
+    };
 
     // The banner already names the problem, so sublines stay to ~30 chars.
     if (open > 0) return { ...base, tone: 'bad', title: `${open} ${plural(open)} found`, sub: `${fmtNum(last.installed)} checked · ${when}` };

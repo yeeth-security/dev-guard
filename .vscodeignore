@@ -1,9 +1,11 @@
 .github/**
+.vscode/**
 .well-known/**
 .gitignore
 *.vsix
 *.sha256
 malicious.json
 scripts/**
+!scripts/uninstall.js
 test/**
 test-fixtures/**

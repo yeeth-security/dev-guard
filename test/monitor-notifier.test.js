@@ -9,7 +9,7 @@
  *     from `auto` to `manual` when `workbench.extensions.uninstallExtension` fails
  */
 
-const { test } = require('node:test');
+const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
@@ -25,8 +25,26 @@ const {
 
 const {
     handleAuditFindings,
-    REMOVAL_GUIDE_URL
+    handleFileFindings,
+    forgetExtensionsInLedger,
+    forgetFileHashesInLedger,
+    REMOVAL_GUIDE_URL,
+    SEE_MORE_BUTTON,
+    dismissActionNotices,
+    remindPendingReload,
+    resetOpenActionNotices,
+    resetShownFileNotices
 } = require('../notifier');
+
+// A toast the test does not click. Resolving with no choice would show it again.
+function stayOpen() {
+    return new Promise(() => {});
+}
+
+beforeEach(() => {
+    resetOpenActionNotices();
+    resetShownFileNotices();
+});
 
 function createFakeContext() {
     const store = new Map();
@@ -103,6 +121,67 @@ test('executeCycle resolves with the audit result; debounced change cycle is ski
     monitor.dispose();
 });
 
+test('a cycle requested during a running scan runs once more after it finishes', async () => {
+    let release = () => {};
+    const triggers = [];
+    const monitor = createAdvisoryMonitor({
+        startupJitterMs: 60 * 60 * 1000,
+        runAudit: trigger => {
+            triggers.push(trigger);
+            if (triggers.length === 1) return new Promise(resolve => { release = () => resolve({ failureCount: 0 }); });
+            return Promise.resolve({ failureCount: 0 });
+        }
+    });
+    const first = monitor.executeCycle('poll');
+    void monitor.executeCycle('change');
+    assert.deepEqual(triggers, ['poll'], 'the running scan is not restarted');
+    release();
+    await first;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(triggers, ['poll', 'change']);
+    monitor.dispose();
+});
+
+test('forgetting an extension in the ledger lets the next poll flag it again', async () => {
+    const context = createFakeContext();
+    const warnings = [];
+    const vscodeApi = {
+        extensions: { all: [] },
+        commands: { executeCommand: async () => {} },
+        window: {
+            showErrorMessage: msg => { warnings.push(msg); return stayOpen(); },
+            showInformationMessage: () => Promise.resolve(undefined)
+        }
+    };
+    const finding = makeFinding('bad.ext', '1.0.0', 'adv-1', 'high');
+
+    await handleAuditFindings({ context, vscodeApi, findings: [finding], trigger: 'poll', removalMode: 'warn' });
+    const quiet = await handleAuditFindings({ context, vscodeApi, findings: [finding], trigger: 'poll', removalMode: 'warn' });
+    assert.equal(quiet.notified, 0, 'still allowlisted in spirit: the ledger keeps the next poll quiet');
+
+    // This is what a Settings removal does before the follow-up scan.
+    assert.equal(forgetExtensionsInLedger(context, ['Bad.Ext']), 1);
+    // A file-threat row must survive an extension forget.
+    context.globalState.update('devGuard.notificationLedger', {
+        ...context.globalState.get('devGuard.notificationLedger'),
+        'file::/repo/.git/hooks/pre-push::abc123': { severity: 'high' }
+    });
+    forgetExtensionsInLedger(context, ['bad.ext']);
+    assert.ok(context.globalState.get('devGuard.notificationLedger')['file::/repo/.git/hooks/pre-push::abc123']);
+
+    const again = await handleAuditFindings({ context, vscodeApi, findings: [finding], trigger: 'poll', removalMode: 'warn' });
+    assert.equal(again.notified, 1);
+    assert.equal(warnings.length, 2);
+
+    // Revoke starts an 'unallow' scan. The old ledger row must not hide it.
+    await handleAuditFindings({ context, vscodeApi, findings: [finding], trigger: 'poll', removalMode: 'warn' });
+    const revoked = await handleAuditFindings({ context, vscodeApi, findings: [finding], trigger: 'unallow', removalMode: 'warn' });
+    assert.equal(revoked.notified, 1, 'a scan after revoke notifies even when the ledger already saw this extension');
+
+    forgetFileHashesInLedger(context, ['ABC123']);
+    assert.equal(context.globalState.get('devGuard.notificationLedger')['file::/repo/.git/hooks/pre-push::abc123'], undefined);
+});
+
 test('ledger prevents duplicate alerts, batches multiple findings, and re-notifies on severity upgrade', async () => {
     const context = createFakeContext();
     const warnings = [];
@@ -110,9 +189,9 @@ test('ledger prevents duplicate alerts, batches multiple findings, and re-notifi
         extensions: { all: [] },
         commands: { executeCommand: async () => {} },
         window: {
-            showWarningMessage: (msg, ...btns) => {
+            showErrorMessage: (msg, ...btns) => {
                 warnings.push({ msg, btns });
-                return Promise.resolve(undefined);
+                return stayOpen();
             },
             showInformationMessage: () => Promise.resolve(undefined)
         }
@@ -164,9 +243,9 @@ test('removalMode auto uninstalls silently and falls back to manual if uninstall
             }
         },
         window: {
-            showWarningMessage: (msg, ...btns) => {
+            showErrorMessage: (msg, ...btns) => {
                 warnings.push({ msg, btns });
-                return Promise.resolve(undefined);
+                return stayOpen();
             },
             showInformationMessage: () => Promise.resolve(undefined)
         }
@@ -184,18 +263,26 @@ test('removalMode auto uninstalls silently and falls back to manual if uninstall
     assert.equal(warnings.length, 2);
     assert.match(warnings[0].msg, /removed malicious extension.*removed\.ext/);
     assert.ok(warnings[0].btns.includes('Reload Window'));
+    assert.ok(warnings[0].btns.every(button => typeof button === 'string'), 'the action notice is a toast, not a dialog');
     assert.ok(warnings[0].btns.includes('What to do next'), 'removal toast links to the cleanup guide');
     assert.match(warnings[1].msg, /locked\.ext/);
     assert.ok(warnings[1].btns.includes('Uninstall'));
 
-    // Same findings again (user reinstalled): auto mode removes removed.ext AGAIN
-    // (the ledger never blocks removal), but the fallback prompt for locked.ext
-    // is ledger-gated so it stays quiet.
+    // Same findings again. The toasts are still up, so this scan does not stack
+    // copies. It still uninstalls removed.ext again.
     const again = await handleAuditFindings({ context, vscodeApi, findings, trigger: 'poll', removalMode: 'auto' });
     assert.equal(again.removed, 1);
     assert.deepEqual(uninstalled, ['removed.ext', 'removed.ext']);
-    assert.equal(warnings.length, 3);
+    assert.equal(warnings.length, 2, 'an open toast is not shown a second time');
+
+    // The toasts are gone and the user still has not reloaded or uninstalled.
+    // The next scan shows both again.
+    resetOpenActionNotices();
+    const third = await handleAuditFindings({ context, vscodeApi, findings, trigger: 'poll', removalMode: 'auto' });
+    assert.equal(third.removed, 1);
+    assert.equal(warnings.length, 4);
     assert.match(warnings[2].msg, /removed malicious extension.*removed\.ext/);
+    assert.match(warnings[3].msg, /locked\.ext/);
 });
 
 test('"What to do next" on the removal toast opens the cleanup guide and records telemetry', async () => {
@@ -204,19 +291,262 @@ test('"What to do next" on the removal toast opens the cleanup guide and records
     const events = [];
     const vscodeApi = {
         extensions: { all: [] },
-        commands: { executeCommand: async () => {} },
-        env: { openExternal: uri => { opened.push(uri); } },
+        commands: {
+            executeCommand: async (cmd, arg) => {
+                if (cmd === 'simpleBrowser.show') opened.push(arg);
+            }
+        },
+        env: { openExternal: uri => { opened.push(`external:${uri}`); } },
         Uri: { parse: s => s },
         window: {
-            showWarningMessage: () => Promise.resolve('What to do next'), // user clicks the guide button
+            // The guide is not the decision, so the toast is shown again and stays up.
+            showErrorMessage: () => {
+                opened.push('toast');
+                if (opened.filter(item => item === 'toast').length === 1) return Promise.resolve('What to do next');
+                return stayOpen();
+            },
             showInformationMessage: () => Promise.resolve(undefined)
         }
     };
     const telemetry = { record: (name, props) => events.push({ name, props }) };
     await handleAuditFindings({ context, vscodeApi, telemetry, findings: [makeFinding('bad.ext', '1', 'adv')], trigger: 'poll', removalMode: 'auto' });
-    await new Promise(r => setImmediate(r)); // let the .then() on the toast run
-    assert.deepEqual(opened, [REMOVAL_GUIDE_URL]);
+    for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r));
+    assert.deepEqual(opened.filter(item => item !== 'toast'), [REMOVAL_GUIDE_URL]);
+    assert.equal(opened.filter(item => item === 'toast').length, 2, 'What to do next brings the same toast back');
     assert.ok(events.some(e => e.name === 'removal_guide_opened' && e.props.from === 'auto_toast'));
+});
+
+function fileFinding() {
+    return {
+        filePath: '/repo/.vscode/tasks.json',
+        displayPath: '.vscode/tasks.json',
+        fileName: 'tasks.json',
+        sha256: 'abc123',
+        severity: 'high',
+        scope: 'workspace',
+        matches: [{ rule: 'REMOTE_PAYLOAD' }]
+    };
+}
+
+test('See more opens the pane from the one file-threat notice', async () => {
+    resetShownFileNotices();
+    const context = createFakeContext();
+    let opened = 0;
+    let quarantined = 0;
+    let progressShown = false;
+    const warnings = [];
+    const vscodeApi = {
+        ProgressLocation: { Notification: 15 },
+        window: {
+            showErrorMessage: (msg, ...btns) => {
+                warnings.push({ msg, btns });
+                // See more is not the decision, so the same toast is shown again.
+                if (warnings.length === 1) return Promise.resolve(SEE_MORE_BUTTON);
+                return stayOpen();
+            },
+            withProgress: () => { progressShown = true; }
+        }
+    };
+    const result = await handleFileFindings({
+        context,
+        vscodeApi,
+        findings: [fileFinding()],
+        trigger: 'startup',
+        onOpenPane: async () => { opened += 1; },
+        onQuarantine: async () => { quarantined += 1; }
+    });
+    for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r));
+    assert.equal(result.notified, 1);
+    assert.equal(progressShown, false, 'there is no second progress notice');
+    assert.equal(warnings.length, 2, 'See more brings the same toast back');
+    const fileToast = warnings[0];
+    assert.ok(fileToast.btns.every(button => typeof button === 'string'), 'the notice is a toast, not a dialog');
+    assert.ok(!fileToast.msg.includes('1 minute'));
+    assert.ok(fileToast.btns.includes('Quarantine'));
+    assert.ok(fileToast.btns.includes('Inspect File'));
+    assert.ok(fileToast.btns.includes(SEE_MORE_BUTTON));
+    assert.ok(!fileToast.btns.includes('Allow File'), 'the suspicious-file popup has no Allow button');
+    assert.ok(!fileToast.btns.includes('Open Dev-Guard'));
+    assert.equal(opened, 1);
+    assert.equal(quarantined, 0, 'See more is not a quarantine');
+});
+
+test('a scan shows a file notice again when that toast is not already up', async () => {
+    resetShownFileNotices();
+    const context = createFakeContext();
+    const warnings = [];
+    const vscodeApi = {
+        window: {
+            showErrorMessage: (msg, ...btns) => {
+                warnings.push({ msg, btns });
+                return stayOpen();
+            }
+        }
+    };
+    const finding = fileFinding();
+    // An earlier scan stored the row, and that toast is no longer up.
+    context.globalState.update('devGuard.notificationLedger', {
+        'file::/repo/.vscode/tasks.json::abc123': { severity: 'high', action: 'file-alerted' }
+    });
+    const startup = await handleFileFindings({
+        context, vscodeApi, findings: [finding], trigger: 'startup'
+    });
+    assert.equal(startup.notified, 1, 'a scan shows the notice again when it is not already up');
+    assert.ok(warnings[0].btns.every(button => typeof button === 'string'), 'the notice is a toast, not a dialog');
+    const again = await handleFileFindings({
+        context, vscodeApi, findings: [finding], trigger: 'change'
+    });
+    assert.equal(again.notified, 0, 'another save does not stack a second notice while the first is up');
+});
+
+test('a pane action dismisses the file notice and does not quarantine from the toast', async () => {
+    resetShownFileNotices();
+    const context = createFakeContext();
+    let quarantined = 0;
+    let shown = 0;
+    const commands = [];
+    let finish;
+    const vscodeApi = {
+        commands: {
+            executeCommand: async command => { commands.push(command); }
+        },
+        window: {
+            // Stays open until the test closes it, the way a real toast does.
+            showErrorMessage: () => {
+                shown += 1;
+                return new Promise(resolve => { finish = resolve; });
+            }
+        }
+    };
+    const result = await handleFileFindings({
+        context,
+        vscodeApi,
+        findings: [fileFinding()],
+        trigger: 'change',
+        onQuarantine: async () => { quarantined += 1; }
+    });
+    assert.equal(result.notified, 1);
+    await dismissActionNotices(vscodeApi, 'file');
+    finish(undefined);
+    for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r));
+    assert.equal(quarantined, 0, 'closing the toast from the pane is not a second quarantine');
+    assert.equal(shown, 1, 'the pane dismiss does not show the toast again');
+    assert.ok(commands.includes('notifications.hideToasts'));
+    assert.ok(commands.includes('notification.clear'));
+});
+
+test('dismissing the extension notice from the pane is not a refused uninstall', async () => {
+    const context = createFakeContext();
+    const events = [];
+    let finish;
+    const vscodeApi = {
+        commands: { executeCommand: async () => {} },
+        extensions: { all: [] },
+        window: {
+            showErrorMessage: () => new Promise(resolve => { finish = resolve; }),
+            showInformationMessage: () => Promise.resolve(undefined)
+        }
+    };
+    await handleAuditFindings({
+        context,
+        vscodeApi,
+        findings: [makeFinding('stay.ext', '1.0.0', 'adv-stay', 'high')],
+        trigger: 'manual',
+        removalMode: 'manual',
+        telemetry: { record: name => events.push(name) }
+    });
+    await dismissActionNotices(vscodeApi, 'extension');
+    finish(undefined);
+    for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r));
+    assert.ok(!events.includes('manual_uninstall_refused'));
+});
+
+test('dismissing a file notice leaves an extension notice up', async () => {
+    resetShownFileNotices();
+    const context = createFakeContext();
+    let shown = 0;
+    const pending = [];
+    const vscodeApi = {
+        commands: { executeCommand: async () => {} },
+        extensions: { all: [] },
+        window: {
+            showErrorMessage: () => {
+                shown += 1;
+                return new Promise(resolve => pending.push(resolve));
+            },
+            showInformationMessage: () => Promise.resolve(undefined)
+        }
+    };
+    await handleAuditFindings({
+        context,
+        vscodeApi,
+        findings: [makeFinding('stay.ext', '1.0.0', 'adv-stay', 'high')],
+        trigger: 'manual',
+        removalMode: 'manual'
+    });
+    await handleFileFindings({
+        context,
+        vscodeApi,
+        findings: [fileFinding()],
+        trigger: 'change'
+    });
+    assert.equal(shown, 2);
+    await dismissActionNotices(vscodeApi, 'file');
+    // The file toast stays closed. The extension toast is shown again.
+    assert.equal(shown, 3);
+});
+
+test('closing the file notice with X shows it again and does not quarantine', async () => {
+    resetShownFileNotices();
+    const context = createFakeContext();
+    let quarantined = 0;
+    let shown = 0;
+    const vscodeApi = {
+        window: {
+            showErrorMessage: () => {
+                shown += 1;
+                // The first close is the X. The toast that comes back stays up.
+                if (shown === 1) return Promise.resolve(undefined);
+                return stayOpen();
+            }
+        }
+    };
+    const result = await handleFileFindings({
+        context,
+        vscodeApi,
+        findings: [fileFinding()],
+        trigger: 'change',
+        onQuarantine: async () => { quarantined += 1; }
+    });
+    for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r));
+    assert.equal(result.notified, 1);
+    assert.equal(shown, 2, 'the X is not an action, so the toast comes back');
+    assert.equal(quarantined, 0, 'closing the toast is not a quarantine');
+});
+
+test('a later auto scan shows the reload notice when the user has not reloaded', async () => {
+    let shown = 0;
+    const vscodeApi = {
+        commands: { executeCommand: async () => {} },
+        window: {
+            showErrorMessage: () => {
+                shown += 1;
+                return stayOpen();
+            }
+        }
+    };
+    const notice = {
+        names: "'Bad'",
+        reportUrl: 'https://www.pkgscan.dev/x',
+        extensionId: 'bad.ext',
+        severity: 'critical'
+    };
+    assert.equal(remindPendingReload(vscodeApi, null, notice), true);
+    assert.equal(shown, 1);
+    assert.equal(remindPendingReload(vscodeApi, null, notice), false, 'an open reload toast is not stacked');
+    resetOpenActionNotices();
+    assert.equal(remindPendingReload(vscodeApi, null, notice), true);
+    assert.equal(shown, 2, 'the next scan shows the reload toast again');
 });
 
 test('onRemoved callback receives auto removals', async () => {
@@ -225,7 +555,7 @@ test('onRemoved callback receives auto removals', async () => {
     const vscodeApi = {
         extensions: { all: [] },
         commands: { executeCommand: async () => {} },
-        window: { showWarningMessage: () => Promise.resolve(undefined), showInformationMessage: () => Promise.resolve(undefined) }
+        window: { showErrorMessage: () => stayOpen(), showInformationMessage: () => Promise.resolve(undefined) }
     };
     await handleAuditFindings({
         context, vscodeApi, findings: [makeFinding('gone.ext', '1.0.0', 'adv-1', 'high')],
