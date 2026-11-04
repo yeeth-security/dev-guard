@@ -61,7 +61,7 @@ const buildProxyServiceUrl = port => `http://127.0.0.1:${port}${PROXY_GALLERY_PA
 const computeChecksum = text => crypto.createHash('sha256').update(Buffer.from(text, 'utf8')).digest('base64').replace(/=+$/, '');
 
 function loadProxyState(context) {
-    const base = { active: false, port: DEFAULT_PROXY_PORT, savedGalleryServiceUrl: undefined, savedDevGuardMarketplace: undefined, upstreamServiceUrl: null };
+    const base = { active: false, port: DEFAULT_PROXY_PORT, savedGalleryServiceUrl: undefined, savedDevGuardMarketplace: undefined, upstreamServiceUrl: null, usedProductJson: false };
     try {
         const raw = context && context.globalState ? context.globalState.get(PROXY_STATE_KEY) : null;
         if (!raw || typeof raw !== 'object') return base;
@@ -70,7 +70,8 @@ function loadProxyState(context) {
             port: Number.isInteger(raw.port) && raw.port > 0 ? raw.port : DEFAULT_PROXY_PORT,
             savedGalleryServiceUrl: typeof raw.savedGalleryServiceUrl === 'string' ? raw.savedGalleryServiceUrl : undefined,
             savedDevGuardMarketplace: typeof raw.savedDevGuardMarketplace === 'string' ? raw.savedDevGuardMarketplace : undefined,
-            upstreamServiceUrl: typeof raw.upstreamServiceUrl === 'string' && !isLoopbackUrl(raw.upstreamServiceUrl) ? raw.upstreamServiceUrl : null
+            upstreamServiceUrl: typeof raw.upstreamServiceUrl === 'string' && !isLoopbackUrl(raw.upstreamServiceUrl) ? raw.upstreamServiceUrl : null,
+            usedProductJson: Boolean(raw.usedProductJson)
         };
     } catch (_e) { return base; }
 }
@@ -224,22 +225,15 @@ async function applyProxyMarketplaceConfig(context, vscodeApi, port, upstreamSer
     const savedDevGuardMarketplace = !isLoopbackUrl(currentMp) && currentMp !== 'custom'
         ? currentMp
         : (prev.savedDevGuardMarketplace ?? '');
-    const nextState = {
-        active: true, port, upstreamServiceUrl,
-        savedGalleryServiceUrl,
-        savedDevGuardMarketplace
-    };
-    await saveProxyState(context, nextState);
-    writeUninstallRestoreManifest(context, vscodeApi, nextState);
-
     const target = vscodeApi.ConfigurationTarget ? vscodeApi.ConfigurationTarget.Global : true;
     let productJsonChanged = false;
-    let usedProductJson = false;
+    let usedProductJson = Boolean(prev.active && prev.usedProductJson);
     let gallerySettingChanged = false;
     if (currentGallery !== proxyUrl) {
         try {
             await vscodeApi.workspace.getConfiguration('extensions.gallery').update('serviceUrl', proxyUrl, target);
             gallerySettingChanged = true;
+            usedProductJson = false;
         } catch (_e) {
             usedProductJson = true;
             productJsonChanged = patchProductJsonGallery(vscodeApi && vscodeApi.env, proxyUrl);
@@ -248,6 +242,14 @@ async function applyProxyMarketplaceConfig(context, vscodeApi, port, upstreamSer
     if (currentMp !== proxyUrl) {
         try { await vscodeApi.workspace.getConfiguration('devGuard').update('marketplace', proxyUrl, target); } catch (_e) { /* ignore */ }
     }
+    const nextState = {
+        active: true, port, upstreamServiceUrl,
+        savedGalleryServiceUrl,
+        savedDevGuardMarketplace,
+        usedProductJson
+    };
+    await saveProxyState(context, nextState);
+    writeUninstallRestoreManifest(context, vscodeApi, nextState);
     const restartRequired = Boolean(gallerySettingChanged || productJsonChanged);
     return { ...nextState, productJsonChanged, usedProductJson, restartRequired };
 }
@@ -262,12 +264,17 @@ async function restoreProxyMarketplaceConfig(context, vscodeApi) {
             gallerySettingRestored = true;
         } catch (_e) { /* ignore */ }
     }
-    const productJsonRestored = restoreProductJsonGallery(vscodeApi && vscodeApi.env, prev.upstreamServiceUrl);
+    // Only touch product.json / workbench.html inside appRoot if Dev-Guard actually patched it.
+    // Avoiding unnecessary reads/writes in appRoot prevents file-lock conflicts with the IDE's
+    // background updater (e.g. Cursor's inno_updater.exe on Windows) when restarting.
+    const productJsonRestored = prev.usedProductJson
+        ? restoreProductJsonGallery(vscodeApi && vscodeApi.env, prev.upstreamServiceUrl)
+        : false;
     if (isLoopbackUrl(readSetting(vscodeApi, 'devGuard', 'marketplace', ''))) {
         try { await vscodeApi.workspace.getConfiguration('devGuard').update('marketplace', prev.savedDevGuardMarketplace || '', target); } catch (_e) { /* ignore */ }
     }
     const restartRequired = Boolean(gallerySettingRestored || productJsonRestored);
-    const nextState = { ...prev, active: false };
+    const nextState = { ...prev, active: false, usedProductJson: false };
     await saveProxyState(context, nextState);
     return { ...nextState, productJsonRestored, restartRequired };
 }

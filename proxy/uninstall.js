@@ -105,8 +105,11 @@ function writeUninstallRestoreManifest(context, vscodeApi, state = {}, io = fs) 
     try {
         const storageDir = path.dirname(filePath);
         io.mkdirSync?.(storageDir, { recursive: true });
+        const usedProductJson = state.usedProductJson !== false;
         const payload = {
-            appRoot: (vscodeApi && vscodeApi.env && vscodeApi.env.appRoot) || null,
+            appRoot: usedProductJson ? ((vscodeApi && vscodeApi.env && vscodeApi.env.appRoot) || null) : null,
+            usedProductJson,
+            restored: false,
             settingsPath: inferUserSettingsPath(storageDir),
             savedGalleryServiceUrl: typeof state.savedGalleryServiceUrl === 'string' ? state.savedGalleryServiceUrl : '',
             savedDevGuardMarketplace: typeof state.savedDevGuardMarketplace === 'string' ? state.savedDevGuardMarketplace : '',
@@ -207,21 +210,46 @@ function runUninstallRestore({ context, appRoot, scriptDir, restoreProductJsonGa
     }
 
     const settingsTargets = new Map();
-    for (const uDir of dirs) settingsTargets.set(path.join(uDir, 'settings.json'), {});
     const appRoots = new Map();
-    for (const r of inferEditorAppRoots({ appRoot, scriptDir, io })) appRoots.set(r, null);
+    const loadedManifests = [];
+    let foundManifest = false;
+    let shouldCheckAppRoots = false;
 
     for (const manifestPath of candidateManifests) {
         try {
             if (!io.existsSync(manifestPath)) continue;
             const data = JSON.parse(io.readFileSync(manifestPath, 'utf8'));
-            if (data && data.settingsPath) settingsTargets.set(data.settingsPath, data);
-            if (data && data.appRoot) appRoots.set(data.appRoot, data.upstreamServiceUrl || null);
+            if (!data || typeof data !== 'object') continue;
+            foundManifest = true;
+            if (data.restored === true) continue;
+            loadedManifests.push({ manifestPath, data });
+            if (data.settingsPath) settingsTargets.set(data.settingsPath, data);
+            if (data.usedProductJson !== false) {
+                shouldCheckAppRoots = true;
+                if (data.appRoot) appRoots.set(data.appRoot, data.upstreamServiceUrl || null);
+            }
         } catch (_error) { /* ignore unreadable manifest */ }
     }
 
+    // If a manifest exists and was already marked `restored: true` by the live
+    // extension session (`checkSelfUninstall`), exit immediately so `scripts/uninstall.js`
+    // and `deactivate()` do zero disk I/O while the IDE restarts or updates.
+    if (foundManifest && loadedManifests.length === 0) {
+        return false;
+    }
+
+    if (!foundManifest) {
+        for (const uDir of dirs) settingsTargets.set(path.join(uDir, 'settings.json'), {});
+        shouldCheckAppRoots = true;
+    }
+    if (shouldCheckAppRoots) {
+        for (const r of inferEditorAppRoots({ appRoot, scriptDir, io })) {
+            if (!appRoots.has(r)) appRoots.set(r, null);
+        }
+    }
+
     let restoredAny = false;
-    if (typeof restoreProductJsonGallery === 'function') {
+    if (shouldCheckAppRoots && typeof restoreProductJsonGallery === 'function') {
         for (const [rootDir, fallbackUrl] of appRoots.entries()) {
             const ok = restoreProductJsonGallery({
                 appRoot: rootDir,
@@ -233,6 +261,12 @@ function runUninstallRestore({ context, appRoot, scriptDir, restoreProductJsonGa
     }
     for (const [sPath, saved] of settingsTargets.entries()) {
         if (restoreMarketplaceSettingsFile(sPath, saved, io)) restoredAny = true;
+    }
+
+    for (const { manifestPath, data } of loadedManifests) {
+        try {
+            io.writeFileSync(manifestPath, `${JSON.stringify({ ...data, restored: true }, null, 2)}\n`, 'utf8');
+        } catch (_e) { /* ignore */ }
     }
     return restoredAny;
 }
