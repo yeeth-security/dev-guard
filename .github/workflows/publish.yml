@@ -11,7 +11,10 @@ name: publish
 #   workflow filename  publish.yml
 #   environment        publish
 #
-# Visual Studio Marketplace, one-time setup on the yeeth publisher
+# Visual Studio Marketplace publishes as yeeth.devguard. The name dev-guard
+# is already taken on that registry, so this job rewrites package.json
+# before vsce runs. Open VSX keeps the name dev-guard.
+# One-time setup on the yeeth publisher
 # (https://marketplace.visualstudio.com/manage/publishers/yeeth -> Trusted Publishing):
 #   Policy name        Release workflow
 #   Repository owner   yeeth-security
@@ -145,6 +148,9 @@ jobs:
       # start in Restricted Mode.
       - name: Publish to Visual Studio Marketplace
         run: |
+          # Marketplace names are unique across publishers. dev-guard is taken,
+          # so this publish uses devguard. The file is not committed.
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.name='devguard'; fs.writeFileSync('package.json', JSON.stringify(p, null, 4)+'\n');"
           VERSION=$(node -p "require('./package.json').version")
-          echo "Publishing dev-guard $VERSION to the yeeth Marketplace publisher via trusted publishing"
+          echo "Publishing yeeth.devguard $VERSION to the Visual Studio Marketplace via trusted publishing"
           npx --yes @vscode/vsce@4.1.0 publish --oidc --allow-star-activation --skip-duplicate
