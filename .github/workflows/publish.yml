@@ -11,9 +11,9 @@ name: publish
 #   workflow filename  publish.yml
 #   environment        publish
 #
-# Visual Studio Marketplace publishes as yeeth.pkgscan. The name dev-guard
-# is already taken on that registry, so this job rewrites package.json
-# before vsce runs. Open VSX keeps the name dev-guard.
+# Visual Studio Marketplace publishes as yeeth.pkgscan. The name and the
+# display name dev-guard are already taken on that registry, so this job
+# rewrites both in package.json before vsce runs. Open VSX keeps dev-guard.
 # One-time setup on the yeeth publisher
 # (https://marketplace.visualstudio.com/manage/publishers/yeeth -> Trusted Publishing):
 #   Policy name        Release workflow
@@ -148,9 +148,10 @@ jobs:
       # start in Restricted Mode.
       - name: Publish to Visual Studio Marketplace
         run: |
-          # Marketplace names are unique across publishers. dev-guard is taken,
-          # so this publish uses pkgscan. The file is not committed.
-          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.name='pkgscan'; fs.writeFileSync('package.json', JSON.stringify(p, null, 4)+'\n');"
+          # Marketplace names and display names are unique across publishers.
+          # Both dev-guard values are taken, so this publish uses pkgscan.
+          # The file is not committed.
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.name='pkgscan'; p.displayName='pkgscan'; fs.writeFileSync('package.json', JSON.stringify(p, null, 4)+'\n');"
           VERSION=$(node -p "require('./package.json').version")
           echo "Publishing yeeth.pkgscan $VERSION to the Visual Studio Marketplace via trusted publishing"
           npx --yes @vscode/vsce@4.1.0 publish --oidc --allow-star-activation --skip-duplicate
