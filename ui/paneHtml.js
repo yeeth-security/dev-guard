@@ -21,6 +21,7 @@ const { section, renderRuns, renderExtensionThreats, renderFileThreats, renderHe
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 const { renderHeroThreats } = require('./paneThreats');
 const { activeThreats } = require('../threats');
+const { openActionCount } = require('../hardening');
 
 // Small inline icons (pkgscan buttons carry a leading icon). Stroke uses currentColor.
 const ICON_RESCAN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
@@ -49,7 +50,7 @@ function renderHero(v, threats = [], removalNotice = '') {
       <div class="hero__text"><div class="banner">${v.title}</div><div class="hero__sub">${v.sub}</div></div>
       ${v.tone === 'bad' ? renderHeroThreats(threats) : ''}
       ${v.pendingReload > 0 ? renderReloadNotice() : ''}
-      ${v.tone === 'ok' && removalNotice ? renderRemovalGuideNotice(removalNotice) : ''}
+      ${(v.tone === 'ok' || v.healthActions > 0) && removalNotice ? renderRemovalGuideNotice(removalNotice) : ''}
     </header>`;
 }
 
@@ -181,9 +182,12 @@ function renderParts({ status, runs = [], extensionThreats, fileThreats = [], qu
     const fileRecords = Array.isArray(allowedFileRecords) && allowedFileRecords.length > 0
         ? allowedFileRecords
         : (Array.isArray(allowedFiles) ? allowedFiles : [...(allowedFiles || [])]).map(hash => ({ hash, label: String(hash) }));
+    // Same definition the Health check summary uses (proxy included), so the
+    // hero and the list below it cannot disagree (ENG-36).
+    const healthActions = openActionCount(hardening, s);
     return {
         hero: renderHero(
-            computeVerdict({ status: s, runs, fileThreats, threatCount: liveThreats.length, scanning }),
+            computeVerdict({ status: s, runs, fileThreats, threatCount: liveThreats.length, scanning, healthActions }),
             liveThreats,
             recentRemovalNotice(audit)
         ),
