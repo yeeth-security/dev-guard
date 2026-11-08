@@ -2,6 +2,11 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
+## [Unreleased]
+
+### Fixed
+- The pane no longer says **Protected** while the Health check has open actions. A clean scan with the marketplace proxy off or waiting for its restart now reads **Partially protected · N actions needed** and names what is left to do, instead of licensing the user to skip the list below it (ENG-36, DGV-005). The two counts come from one function, so they cannot disagree again.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added
