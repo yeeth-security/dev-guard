@@ -7,5 +7,7 @@
 malicious.json
 scripts/**
 !scripts/uninstall.js
+bin/**
+ci/**
 test/**
 test-fixtures/**

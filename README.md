@@ -89,6 +89,34 @@
 
 ---
 
+## 🖥️ CI and pre-push checks
+
+The workspace rules are a pure module, so the same checks run outside the editor. `bin/devguard-scan.js` scans a checked-out tree, prints one line per finding, and exits 1 when any finding is critical or high.
+
+```bash
+node bin/devguard-scan.js .
+node bin/devguard-scan.js . --json
+node bin/devguard-scan.js . --emit-hashes
+node bin/devguard-scan.js . --verdicts verdicts.json
+```
+
+`--verdicts` takes a local JSON map from SHA-256 to a verdict, such as `{ "<sha256>": { "verdict": "malicious", "campaign": "name" } }`. A flagged file whose hash is in the map becomes a critical `KNOWN_MALICIOUS_ARTIFACT` finding with the campaign name. The scan makes no network call.
+
+Use the composite action in a workflow. Checkout is the caller's job; there is no token, GitHub App, or PR comment.
+
+```yaml
+- uses: actions/checkout@v4
+- uses: yeeth-security/dev-guard/ci/github-action@main
+  with:
+    path: .
+    # verdicts-file: .devguard/verdicts.json
+    # emit-hashes: "true"
+```
+
+The step fails when the scan exits 1.
+
+---
+
 ## Telemetry
 
 DevGuard sends pseudonymous usage stats to pkgscan.dev so we can tell whether it is working in the field. Turn it off with `devGuard.telemetry.enabled`, or by disabling your editor's telemetry.
