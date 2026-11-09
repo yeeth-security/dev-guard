@@ -6,3 +6,6 @@ node_modules/
 scripts/funnel-*
 scripts/fixtures/
 .DS_Store
+
+# Local Playwright MCP output
+.playwright-mcp/

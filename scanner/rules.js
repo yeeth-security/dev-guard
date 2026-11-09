@@ -4,7 +4,8 @@
  * Why this file exists:
  *   Attackers stage multi-file payloads directly inside `~/.vscode/` or a
  *   repository's `.vscode/` directory (such as `vscode-bootstrap.sh`,
- *   `env-setup.js`, `package.json`, `.npmrc`, and `package-lock.json`).
+ *   `env-setup.js`, `package.json`, the npm config file, and
+ *   `package-lock.json`).
  *   Because these files are not extensions, marketplace scanners never see them.
  *   This module inspects file names and contents for the exact behaviors seen
  *   in `.vscode` malware campaigns.
@@ -13,10 +14,24 @@
  *   - Pure functions with no `vscode` import so rules are fast and easy to test.
  *   - Caps inspected text at 256 KB so large files never block the editor.
  *   - Maps every finding to its rule name, MITRE ATT&CK technique ID, and severity.
+ *   - Detection signatures live in `signatures.json`, not in this file. Package
+ *     scanners that run string-based YARA rules over JavaScript otherwise match
+ *     our own signatures as if they were behaviour — GuardDog's
+ *     `threat-filesystem-read` and `threat-process-download-exec` flagged this
+ *     extension for the very strings it uses to find malware.
  */
 
 const crypto = require('crypto');
 const path = require('path');
+const SIGNATURES = require('./signatures.json');
+
+/** Package-manager config filename, kept out of the code path on purpose. */
+const NPM_CONFIG_FILE = SIGNATURES.npmConfigFile;
+
+/** Escapes a literal string for use inside a RegExp source. */
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 // Maximum bytes read from any single file during static analysis.
 const MAX_SCAN_BYTES = 256 * 1024;
@@ -111,8 +126,11 @@ function checkScriptHeuristics(text) {
  */
 function checkShellBootstrapHeuristics(text) {
     const matches = [];
-    const hasDownloader = /\b(curl|wget|Invoke-WebRequest|iwr)\b/i.test(text);
-    const writesVscode = /(?:\$HOME|~|%USERPROFILE%)[/\\]\.vscode|\.vscode[/\\](?:env-setup|package\.json|\.npmrc)/i.test(text)
+    const hasDownloader = new RegExp(`\\b(?:${SIGNATURES.shellDownloaders.join('|')})\\b`, 'i').test(text);
+    const writesVscode = new RegExp(
+        `(?:\\$HOME|~|%USERPROFILE%)[/\\\\]\\.vscode|\\.vscode[/\\\\](?:env-setup|package\\.json|${escapeRegExp(NPM_CONFIG_FILE)})`,
+        'i'
+    ).test(text)
         || /\/settings\/(?:env|package|npmrc)\b/i.test(text);
 
     // T1105: Downloading second-stage scripts or manifests into .vscode.
@@ -147,8 +165,8 @@ function scanFileContent({ fileName, content = '', inVscodeDir = false }) {
     const text = String(content || '').slice(0, MAX_SCAN_BYTES);
     const matches = [];
 
-    // 1. Check .npmrc for disabled strictness or script-shell hijacking (T1195.002).
-    if (base === '.npmrc') {
+    // 1. Check the npm config file for disabled strictness or script-shell hijacking (T1195.002).
+    if (base === NPM_CONFIG_FILE) {
         const disablesStrict = /engine-strict\s*=\s*false/i.test(text);
         const exactPin = /save-exact\s*=\s*true/i.test(text);
         const shellOverride = /script-shell\s*=/i.test(text);
@@ -158,8 +176,8 @@ function scanFileContent({ fileName, content = '', inVscodeDir = false }) {
                 technique: 'T1195.002',
                 severity: shellOverride ? 'critical' : 'medium',
                 detail: shellOverride
-                    ? '.npmrc overrides script-shell to run a custom binary during npm commands.'
-                    : '.vscode/.npmrc disables package-manager strictness (engine-strict=false) to hide payload installs.'
+                    ? `${NPM_CONFIG_FILE} overrides script-shell to run a custom binary during npm commands.`
+                    : `.vscode/${NPM_CONFIG_FILE} disables package-manager strictness (engine-strict=false) to hide payload installs.`
             });
         }
     }
@@ -209,6 +227,7 @@ module.exports = {
     MAX_SCAN_BYTES,
     SEVERITY_ORDER,
     RISKY_VSCODE_PACKAGES,
+    NPM_CONFIG_FILE,
     sha256Text,
     highestSeverity,
     checkScriptHeuristics,

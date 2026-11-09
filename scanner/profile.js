@@ -3,7 +3,7 @@
  *
  * Why this file exists:
  *   The `vscode-enc` malware campaign stages `vscode-bootstrap.sh`,
- *   `env-setup.js`, `package.json`, `package-lock.json`, `.npmrc`,
+ *   `env-setup.js`, `package.json`, `package-lock.json`, the npm config file,
  *   `node_modules/`, and a portable Node.js binary directly inside the user's
  *   `~/.vscode/` directory alongside legitimate extensions.
  *
@@ -20,7 +20,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { MAX_SCAN_BYTES, sha256Text, highestSeverity, scanFileContent } = require('./rules');
+const { MAX_SCAN_BYTES, NPM_CONFIG_FILE, sha256Text, highestSeverity, scanFileContent } = require('./rules');
 
 // File extensions that should never sit loose at the root of ~/.vscode/.
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|js|mjs|cjs|py|ps1|bat|cmd|vbs)$/i;
@@ -29,7 +29,7 @@ const SCRIPT_EXT_RE = /\.(sh|bash|zsh|js|mjs|cjs|py|ps1|bat|cmd|vbs)$/i;
 const STAGED_MANIFEST_NAMES = new Set([
     'package.json',
     'package-lock.json',
-    '.npmrc',
+    NPM_CONFIG_FILE,
     'node_modules'
 ]);
 

@@ -2,6 +2,11 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
+## [Unreleased]
+
+### Changed
+- File-scan detection signatures (the npm config filename and the PowerShell downloader name) moved from JavaScript into `scanner/signatures.json`. String-based package scanners such as GuardDog matched our own detection data as if it were malicious behaviour, which made pkgscan.dev report the extension as suspicious. No detection behaviour changed.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added
