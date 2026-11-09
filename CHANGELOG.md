@@ -8,6 +8,9 @@ Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates
 - `bin/devguard-scan.js`, a headless CLI for the existing workspace rules. It scans one or more paths with text or `--json` output, exits 1 on a critical or high finding, and can print the SHA-256 of every flagged file (`--emit-hashes`). `--verdicts FILE` joins a flagged hash to a local `{ verdict, campaign }` map and reports a critical `KNOWN_MALICIOUS_ARTIFACT` finding. No network access and no new detection logic.
 - `ci/github-action/action.yml`, a composite action that runs the CLI on a checked-out tree. No GitHub App, token, or PR comment.
 
+### Changed
+- The workspace scan now reports the `task.allowAutomaticTasks` automatic-task bypass and resolves label-only `preLaunchTask`/`postDebugTask` against the workspace tasks; a label is only flagged when the named task is already flagged.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added

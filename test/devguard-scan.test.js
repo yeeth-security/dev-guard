@@ -36,13 +36,17 @@ function withTempDir(fn) {
     }
 }
 
-test('graphtage-shape fixture exits 1 and names the folder-open task', () => {
+test('graphtage-shape fixture exits 1 and names all three primitives', () => {
     const result = run([SHAPE]);
     assert.equal(result.status, 1);
     assert.match(result.stdout, /^high C2_COMMUNICATION \.vscode\/tasks\.json/m);
     assert.match(result.stdout, /graphtage-format/);
     assert.match(result.stdout, /folderOpen/);
-    assert.match(result.stdout, /summary: 0 critical, 1 high, 0 medium, 0 low/);
+    assert.match(result.stdout, /^critical C2_COMMUNICATION \.vscode\/settings\.json/m);
+    assert.match(result.stdout, /task\.allowAutomaticTasks/);
+    assert.match(result.stdout, /^high C2_COMMUNICATION \.vscode\/launch\.json/m);
+    assert.match(result.stdout, /preLaunchTask "graphtage-format"/);
+    assert.match(result.stdout, /summary: 1 critical, 2 high, 0 medium, 0 low/);
 });
 
 test('clean fixture exits 0 and prints no findings', () => {
@@ -58,17 +62,21 @@ test('--json returns the stable finding, hash, and summary shape', () => {
     const payload = JSON.parse(result.stdout);
     assert.deepEqual(Object.keys(payload), ['findings', 'hashes', 'summary']);
 
-    assert.equal(payload.findings.length, 1);
-    const finding = payload.findings[0];
-    assert.deepEqual(Object.keys(finding), ['rule', 'technique', 'severity', 'file', 'detail']);
-    assert.equal(finding.rule, 'C2_COMMUNICATION');
-    assert.equal(finding.technique, 'T1059');
-    assert.equal(finding.severity, 'high');
-    assert.equal(finding.file, '.vscode/tasks.json');
+    assert.equal(payload.findings.length, 3);
+    const byFile = Object.fromEntries(payload.findings.map(f => [f.file, f]));
+    for (const finding of payload.findings) {
+        assert.deepEqual(Object.keys(finding), ['rule', 'technique', 'severity', 'file', 'detail']);
+    }
+    assert.equal(byFile['.vscode/tasks.json'].rule, 'C2_COMMUNICATION');
+    assert.equal(byFile['.vscode/tasks.json'].technique, 'T1059');
+    assert.equal(byFile['.vscode/tasks.json'].severity, 'high');
+    assert.equal(byFile['.vscode/settings.json'].severity, 'critical');
+    assert.equal(byFile['.vscode/launch.json'].severity, 'high');
 
-    const expectedHash = sha256File(path.join(SHAPE, '.vscode', 'tasks.json'));
-    assert.deepEqual(payload.hashes, [expectedHash]);
-    assert.deepEqual(payload.summary, { critical: 0, high: 1, medium: 0, low: 0 });
+    const expectedHashes = ['.vscode/launch.json', '.vscode/settings.json', '.vscode/tasks.json']
+        .map(file => sha256File(path.join(SHAPE, file)));
+    assert.deepEqual(payload.hashes, expectedHashes);
+    assert.deepEqual(payload.summary, { critical: 1, high: 2, medium: 0, low: 0 });
 });
 
 test('--emit-hashes prints the sha256 of every flagged file', () => {
@@ -93,7 +101,7 @@ test('--verdicts turns a flagged hash into a critical finding with the campaign 
         assert.equal(result.status, 1);
         assert.match(result.stdout, /^critical KNOWN_MALICIOUS_ARTIFACT \.vscode\/tasks\.json/m);
         assert.match(result.stdout, /graphtage-pr-190/);
-        assert.match(result.stdout, /summary: 1 critical, 1 high, 0 medium, 0 low/);
+        assert.match(result.stdout, /summary: 2 critical, 2 high, 0 medium, 0 low/);
     });
 });
 
@@ -107,8 +115,8 @@ test('--verdicts leaves findings alone when no hash matches', () => {
         const result = run(['--verdicts', verdictsFile, '--json', SHAPE]);
         assert.equal(result.status, 1);
         const payload = JSON.parse(result.stdout);
-        assert.equal(payload.findings.length, 1);
-        assert.equal(payload.summary.critical, 0);
+        assert.equal(payload.findings.length, 3);
+        assert.equal(payload.summary.critical, 1);
     });
 });
 

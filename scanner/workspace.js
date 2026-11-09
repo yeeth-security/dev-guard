@@ -46,6 +46,7 @@ function analyzeTasksJson(text) {
     const tasks = parsed && Array.isArray(parsed.tasks) ? parsed.tasks : [];
     const matches = [];
     const flaggedTasks = [];
+    const flaggedTaskMatches = {};
     let hasFolderOpenTask = false;
 
     for (const t of tasks) {
@@ -59,27 +60,41 @@ function analyzeTasksJson(text) {
         if (isAutoOpen || callsSuspicious) {
             if (isAutoOpen) hasFolderOpenTask = true;
             flaggedTasks.push(label);
-            matches.push({
+            const match = {
                 rule: isAutoOpen && callsSuspicious ? 'REMOTE_PAYLOAD' : 'C2_COMMUNICATION',
                 technique: isAutoOpen && callsSuspicious ? 'T1105' : 'T1059',
                 severity: isAutoOpen && callsSuspicious ? 'critical' : 'high',
                 detail: isAutoOpen
                     ? `Task "${label}" runs automatically on folderOpen (${cmdText || 'shell command'}).`
                     : `Task "${label}" executes a script inside .vscode/ or downloads remote content.`
-            });
+            };
+            matches.push(match);
+            flaggedTaskMatches[label] = match;
         }
     }
-    return { matches, flaggedTasks, hasFolderOpenTask };
+    return { matches, flaggedTasks, flaggedTaskMatches, hasFolderOpenTask };
 }
 
-/** Checks `.vscode/settings.json` for terminal env hijacks (`NODE_OPTIONS`, `.vscode` PATH) or tool overrides. */
-function analyzeSettingsJson(text) {
+/** Checks `.vscode/settings.json` for terminal env hijacks (`NODE_OPTIONS`, `.vscode` PATH), tool overrides, or the automatic-task bypass. */
+function analyzeSettingsJson(text, context = {}) {
     const parsed = parseJsonc(text);
     if (!parsed || typeof parsed !== 'object') return [];
     const matches = [];
+    const hasFolderOpenTask = Boolean(context.hasFolderOpenTask);
     for (const [key, val] of Object.entries(parsed)) {
         const serialized = JSON.stringify(val || '');
-        if (/^terminal\.integrated\.(env|profiles|automationProfile|shell)\b/.test(key)) {
+        if (key === 'task.allowAutomaticTasks') {
+            // "on" is the current opt-in and `true` is the legacy boolean form.
+            // "off", "auto", and a missing key keep the prompt and stay quiet.
+            if (val === true || String(val).toLowerCase() === 'on') {
+                matches.push({
+                    rule: 'C2_COMMUNICATION',
+                    technique: 'T1059',
+                    severity: hasFolderOpenTask ? 'critical' : 'high',
+                    detail: `Workspace setting "task.allowAutomaticTasks" is ${JSON.stringify(val)}, which removes the automatic-task prompt.${hasFolderOpenTask ? ' A folder-open task in this workspace runs without confirmation.' : ''}`
+                });
+            }
+        } else if (/^terminal\.integrated\.(env|profiles|automationProfile|shell)\b/.test(key)) {
             if (/NODE_OPTIONS|\.vscode|\b(curl|wget|bash|sh|node)\b/i.test(serialized)) {
                 matches.push({
                     rule: 'C2_COMMUNICATION',
@@ -100,20 +115,39 @@ function analyzeSettingsJson(text) {
     return matches;
 }
 
-/** Checks `.vscode/launch.json` for debug configurations that execute `.vscode/` scripts. */
-function analyzeLaunchJson(text) {
+/** Checks `.vscode/launch.json` for debug configurations that execute `.vscode/` scripts or start flagged tasks. */
+function analyzeLaunchJson(text, context = {}) {
     const parsed = parseJsonc(text);
     const configs = parsed && Array.isArray(parsed.configurations) ? parsed.configurations : [];
+    const taskMatches = context.taskMatches && typeof context.taskMatches === 'object' ? context.taskMatches : {};
     const matches = [];
     for (const cfg of configs) {
         if (!cfg || typeof cfg !== 'object') continue;
         const fields = [cfg.program, cfg.runtimeExecutable, cfg.preLaunchTask, cfg.postDebugTask].filter(Boolean).join(' ');
-        if (/\.vscode[/\\]/i.test(fields)) {
+        const pathFlagged = /\.vscode[/\\]/i.test(fields);
+        if (pathFlagged) {
             matches.push({
                 rule: 'C2_COMMUNICATION',
                 technique: 'T1059',
                 severity: 'high',
                 detail: `Debug config "${cfg.name || 'launch'}" invokes a script or binary inside .vscode/.`
+            });
+        }
+
+        // A bare label is only a real chain when it resolves to a task the
+        // workspace tasks scan already flags. Unresolved labels stay quiet:
+        // repositories routinely name tasks the user defines themselves.
+        for (const field of ['preLaunchTask', 'postDebugTask']) {
+            const label = cfg[field];
+            if (typeof label !== 'string' || !label) continue;
+            if (!Object.prototype.hasOwnProperty.call(taskMatches, label)) continue;
+            if (pathFlagged && /\.vscode[/\\]/i.test(label)) continue;
+            const task = taskMatches[label];
+            matches.push({
+                rule: task.rule || 'C2_COMMUNICATION',
+                technique: task.technique || 'T1059',
+                severity: task.severity || 'high',
+                detail: `Debug config "${cfg.name || 'launch'}" starts ${field} "${label}", a task the workspace scan already flags.`
             });
         }
     }
@@ -131,6 +165,15 @@ function scanWorkspaceFolder(folderPath, io = {}) {
     // 1. Inspect entries in <workspace>/.vscode/
     let vscodeEntries = [];
     try { vscodeEntries = readdirSync(vscodeDir); } catch (_e) { vscodeEntries = []; }
+
+    // Read tasks.json first so settings.json and launch.json can share one
+    // workspace-level view, regardless of directory iteration order.
+    const tasksEntry = vscodeEntries.find(entry => String(entry || '').toLowerCase() === 'tasks.json');
+    const tasksText = tasksEntry ? readText(path.join(vscodeDir, String(tasksEntry)), readFileSync) : null;
+    const workspaceTasks = tasksText
+        ? analyzeTasksJson(tasksText)
+        : { matches: [], flaggedTasks: [], flaggedTaskMatches: {}, hasFolderOpenTask: false };
+
     for (const rawName of vscodeEntries) {
         const name = String(rawName || '');
         const lower = name.toLowerCase();
@@ -140,8 +183,12 @@ function scanWorkspaceFolder(folderPath, io = {}) {
         if (lower === 'tasks.json' || lower === 'settings.json' || lower === 'launch.json') {
             const text = readText(fullPath, readFileSync);
             if (!text) continue;
-            const taskRes = lower === 'tasks.json' ? analyzeTasksJson(text) : null;
-            const matches = taskRes ? taskRes.matches : (lower === 'settings.json' ? analyzeSettingsJson(text) : analyzeLaunchJson(text));
+            const taskRes = lower === 'tasks.json' ? workspaceTasks : null;
+            const matches = taskRes
+                ? taskRes.matches
+                : (lower === 'settings.json'
+                    ? analyzeSettingsJson(text, { hasFolderOpenTask: workspaceTasks.hasFolderOpenTask })
+                    : analyzeLaunchJson(text, { taskMatches: workspaceTasks.flaggedTaskMatches }));
             if (matches.length > 0) {
                 findings.push({
                     id: `workspace:${fullPath}`, scope: 'workspace', filePath: fullPath, displayPath: relPath,
