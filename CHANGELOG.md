@@ -4,6 +4,8 @@ Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates
 
 ## [Unreleased]
 
+### Changed
+- File-scan detection signatures (the npm config filename and the PowerShell downloader name) moved from JavaScript into `scanner/signatures.json`. String-based package scanners such as GuardDog matched our own detection data as if it were malicious behaviour, which made pkgscan.dev report the extension as suspicious. No detection behaviour changed.
 ### Fixed
 - The pane no longer says **Protected** while the Health check has open actions. A clean scan with the marketplace proxy off or waiting for its restart now reads **Partially protected · N actions needed** and names what is left to do, instead of licensing the user to skip the list below it (ENG-36, DGV-005). The two counts come from one function, so they cannot disagree again.
 
