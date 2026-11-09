@@ -13,7 +13,7 @@ const { renderPane, renderParts } = require('./paneHtml');
 const { HARDEN_GUIDE_URL } = require('./paneSections');
 const { readAllowlist, addToAllowlist, removeFromAllowlist } = require('../allowlist');
 const { readAllowedFiles, readAllowedFileRecords } = require('../scanner/quarantine');
-const { CHECKS, readState, openCount, applyCheck, summarizeHealthPosture, splitSettingKey, versionBucket } = require('../hardening');
+const { CHECKS, readState, openActionCount, applyCheck, summarizeHealthPosture, splitSettingKey, versionBucket } = require('../hardening');
 const { REMOVAL_GUIDE_URL, dismissActionNotices } = require('../notifier');
 const { openInEditor } = require('../openUrl');
 
@@ -177,7 +177,7 @@ function createPane({
                 if (result.applied) {
                     const updatedRows = readState(inspectSetting, { appName });
                     const st = getStatus() || {};
-                    const remainingUnmet = openCount(updatedRows) + (st.proxyEnabled === false ? 1 : 0);
+                    const remainingUnmet = openActionCount(updatedRows, st);
                     audit.record({ type: 'hardening', detail: result.row.key });
                     telemetry?.record('hardening_applied', {
                         check_id: check,

@@ -98,8 +98,14 @@ function ringSvg({ flagged = 0, checked = 0, tone = 'idle' }) {
  * `threatCount` is the live total (extensions still installed, plus file
  * threats). A later file-only scan records `findings: 0`, so the newest run
  * alone cannot be the total — that dropped an extension that was still there.
+ *
+ * `healthActions` is the number of open Health check items (`openActionCount`
+ * in hardening.js, which includes the marketplace proxy). A clean inventory is
+ * not the same as a protected machine: while the proxy is off or waiting for a
+ * restart, dev-guard cannot block a malicious marketplace install, so the
+ * headline must not say "Protected" (ENG-36).
  */
-function computeVerdict({ status = {}, runs = [], fileThreats = [], threatCount, scanning = false }) {
+function computeVerdict({ status = {}, runs = [], fileThreats = [], threatCount, scanning = false, healthActions = 0 }) {
     if (scanning) return { tone: 'busy', title: 'Scanning…', sub: 'Checking against advisories', flagged: 0, checked: 0 };
     const activeFiles = Array.isArray(fileThreats) ? fileThreats.length : 0;
     const last = runs[0];
@@ -131,7 +137,8 @@ function computeVerdict({ status = {}, runs = [], fileThreats = [], threatCount,
     const base = {
         flagged: open,
         checked: (last.installed || 0) + activeFiles,
-        pendingReload: 0
+        pendingReload: 0,
+        healthActions: Math.max(0, Number(healthActions) || 0)
     };
 
     // The banner already names the problem, so sublines stay to ~30 chars.
@@ -144,8 +151,28 @@ function computeVerdict({ status = {}, runs = [], fileThreats = [], threatCount,
     const pending = Number(status.pendingReload) || 0;
     if (pending > 0) return { ...base, pendingReload: pending, tone: 'warn', title: `${pending} ${plural(pending)} removed`, sub: `reload to finish · ${when}` };
     if (last.removed > 0) return { ...base, tone: 'ok', title: `${last.removed} ${plural(last.removed)} removed`, sub: `${fmtNum(last.installed)} checked · ${when}` };
-    if (last.stale || status.failureCount) return { ...base, tone: 'warn', title: 'Protected · feed stale', sub: `cached advisories · ${when}` };
-    return { ...base, tone: 'ok', title: 'Protected', sub: `${fmtNum(last.installed)} extensions clear · ${when}` };
+
+    const actions = base.healthActions;
+    const stale = last.stale || status.failureCount;
+    const installed = last.installed || 0;
+
+    // A clean inventory with open Health check items is a partial state: the
+    // installed extensions are clear, but at least one protection is not on.
+    // Say what the user still has to do instead of licensing them to skip the
+    // list below the header.
+    if (actions > 0) {
+        return {
+            ...base,
+            tone: 'warn',
+            title: 'Partially protected',
+            sub: stale
+                ? `${actions} action${actions === 1 ? '' : 's'} needed · feed stale`
+                : `${actions} action${actions === 1 ? '' : 's'} needed · ${fmtNum(installed)} extension${installed === 1 ? '' : 's'} clear`
+        };
+    }
+
+    if (stale) return { ...base, tone: 'warn', title: 'Protected · feed stale', sub: `cached advisories · ${when}` };
+    return { ...base, tone: 'ok', title: 'Protected', sub: `${fmtNum(installed)} extension${installed === 1 ? '' : 's'} clear · ${when}` };
 }
 
 /**
