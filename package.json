@@ -133,7 +133,6 @@
     },
     "scripts": {
         "vscode:uninstall": "node scripts/uninstall.js",
-        "test": "node --test test/*.test.js",
-        "sync-badge": "node scripts/sync-badge.js"
+        "test": "node --test test/*.test.js"
     }
 }

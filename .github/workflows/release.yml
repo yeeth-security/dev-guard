@@ -99,6 +99,12 @@ jobs:
         if: steps.check.outputs.release == 'true'
         run: node --check extension.js && node --check telemetry.js
 
+      # The README travels inside the VSIX, so a pinned badge ships the previous
+      # version's verdict on the listing. Fail the release instead of shipping it.
+      - name: Verify README badge is versionless
+        if: steps.check.outputs.release == 'true'
+        run: node --test test/readme-badge.test.js
+
       - name: Package VSIX and checksum
         if: steps.check.outputs.release == 'true'
         id: package

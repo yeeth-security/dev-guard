@@ -18,7 +18,9 @@
 </tr>
 </table>
 
-[![pkgscan.dev](https://www.pkgscan.dev/api/badge/vscode-extension/yeeth/dev-guard%400.1.2?repository_url=https%3A%2F%2Fopen-vsx.org)](https://www.pkgscan.dev/pkg/vscode-extension/yeeth/dev-guard%400.1.2?repository_url=https%3A%2F%2Fopen-vsx.org)
+<!-- Versionless on purpose: the badge must describe the version on offer, and a
+     pinned URL keeps reporting the previous release's verdict inside every VSIX. -->
+[![pkgscan.dev](https://www.pkgscan.dev/api/badge/vscode-extension/yeeth/dev-guard?repository_url=https%3A%2F%2Fopen-vsx.org)](https://www.pkgscan.dev/pkg/vscode-extension/yeeth/dev-guard?repository_url=https%3A%2F%2Fopen-vsx.org)
 
 ---
 

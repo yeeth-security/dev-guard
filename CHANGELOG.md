@@ -2,6 +2,11 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
+## [Unreleased]
+
+### Changed
+- The README pkgscan.dev badge is versionless. It now reports the verdict of the version on offer; previously each release shipped with the previous version's verdict pinned in the VSIX, so the listing could read "clean" for a version pkgscan called suspicious. The release workflow fails if the badge is pinned again.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added
