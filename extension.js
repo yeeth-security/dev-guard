@@ -163,10 +163,10 @@ let activeWorkspaceWatchers = null;
 
 function getRemovalMode() {
     try {
-        const raw = vscode.workspace.getConfiguration('devGuard').get('removalMode', 'auto');
-        return raw === 'manual' || raw === 'warn' ? raw : 'auto';
+        const raw = vscode.workspace.getConfiguration('devGuard').get('removalMode', 'manual');
+        return raw === 'auto' || raw === 'warn' ? raw : 'manual';
     } catch (_error) {
-        return 'auto';
+        return 'manual';
     }
 }
 

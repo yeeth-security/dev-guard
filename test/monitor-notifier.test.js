@@ -563,3 +563,31 @@ test('onRemoved callback receives auto removals', async () => {
     });
     assert.deepEqual(seen, [{ ids: ['gone.ext'], action: 'auto' }]);
 });
+
+test('removalMode defaults to manual: a finding is prompted, never uninstalled', async () => {
+    const context = createFakeContext();
+    const uninstalled = [];
+    const notices = [];
+    const vscodeApi = {
+        extensions: { all: [] },
+        commands: { executeCommand: async id => { uninstalled.push(id); } },
+        window: {
+            showErrorMessage: (message, ...items) => {
+                notices.push({ message, items });
+                // The default mode must wait for a click. The uninstall path is
+                // tested explicitly above with removalMode: 'auto'.
+                return new Promise(() => {});
+            },
+            showInformationMessage: () => Promise.resolve(undefined)
+        }
+    };
+
+    const result = await handleAuditFindings({
+        context, vscodeApi, findings: [makeFinding('bad.ext', '1.0.0', 'adv-1')], trigger: 'poll'
+    });
+
+    assert.equal(result.removed, 0);
+    assert.deepEqual(uninstalled, [], 'nothing is uninstalled without a click');
+    assert.equal(notices.length, 1);
+    assert.ok(notices[0].items.includes('Uninstall'), 'the notice offers Uninstall');
+});

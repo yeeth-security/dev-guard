@@ -84,12 +84,12 @@
                         "warn"
                     ],
                     "enumDescriptions": [
-                        "Automatically uninstall extensions flagged as malicious and show a summary notification with a Reload Window action.",
-                        "Show one batched notification with an Uninstall button when malicious extensions are found.",
+                        "Automatically uninstall extensions flagged as malicious and show a summary notification with a Reload Window action. Uninstalling is permanent; the extension must be reinstalled from the marketplace.",
+                        "Show one batched notification with an Uninstall button when malicious extensions are found. Nothing is removed until you click it.",
                         "Show a warning notification only; never uninstall automatically."
                     ],
-                    "default": "auto",
-                    "description": "How dev-guard responds when an installed extension matches a malicious advisory from the pkgscan.dev advisories feed."
+                    "default": "manual",
+                    "description": "How dev-guard responds when an installed extension matches a malicious advisory from the pkgscan.dev advisories feed. Defaults to `manual` so a fresh install never uninstalls without asking."
                 },
                 "devGuard.marketplace": {
                     "type": "string",

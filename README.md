@@ -83,7 +83,7 @@
 ## 🔐 How it works
 
 * **Live advisories.** Every scan checks your extensions against the public [pkgscan.dev](https://www.pkgscan.dev) malicious-extension feed for VS Code, Cursor, and Open VSX. The feed refreshes every 5 minutes, and installing an extension triggers an immediate scan.
-* **Removal.** Flagged extensions are uninstalled automatically by default (`devGuard.removalMode`: `auto` · `manual` · `warn`) and removed again if reinstalled. Add an ID to `devGuard.allowlist` to opt one out. Every removal links to a [cleanup guide](https://yeethsecurity.com/guides/vscode-extension-malware/#remove) for what to do next.
+* **Removal.** Flagged extensions are listed with an **Uninstall** button by default (`devGuard.removalMode`, which defaults to `manual`; `auto` · `manual` · `warn`). Nothing is removed until you click it. `auto` uninstalls without asking and shows a Reload Window action; that removal is permanent, and the extension must be reinstalled from the marketplace. Extensions are removed again if reinstalled. Add an ID to `devGuard.allowlist` to opt one out. Every removal links to a [cleanup guide](https://yeethsecurity.com/guides/vscode-extension-malware/#remove) for what to do next.
 * **Side pane.** The shield in the Activity Bar shows your current verdict, lets you run a scan and change settings, and keeps a scan log, removed list, audit log, and a hashed inventory of what was checked. Everything is stored locally.
 * **Remote windows.** DevGuard sees the extensions in its own window; for SSH, WSL, or Dev Containers, install it in the remote as well.
 

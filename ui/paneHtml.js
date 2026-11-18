@@ -27,7 +27,7 @@ const ICON_RESCAN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 const ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4"/><path d="M12 17.5h.01"/></svg>';
 const ICON_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5.5c0 4.3 3 8.2 7 9.5 4-1.3 7-5.2 7-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg>';
 
-const MODES = [['auto', 'Auto-remove', 'removes threats automatically'], ['manual', 'Manual', 'asks before removing'], ['warn', 'Warn only', 'warns, never removes']];
+const MODES = [['auto', 'Auto-remove', 'removes threats automatically · cannot be undone'], ['manual', 'Manual', 'asks before removing'], ['warn', 'Warn only', 'warns, never removes']];
 
 function renderHeader() {
     return `<div class="header">
@@ -145,7 +145,7 @@ function renderMarketplace(s) {
 
 /** Setup card: stacked label-over-control blocks (works at any width). */
 function renderSetup(s, lastRun, hardening = []) {
-    const mode = s.removalMode || 'auto';
+    const mode = s.removalMode || 'manual';
     const modeOptions = MODES.map(([value, label]) => `<option value="${value}" ${mode === value ? 'selected' : ''}>${label}</option>`).join('');
     const modeHint = (MODES.find(([value]) => value === mode) || MODES[0])[2];
     const feed = lastRun ? `${fmtNum(lastRun.advisoryCount)} advisories` : 'not loaded yet';

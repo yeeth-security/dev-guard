@@ -2,6 +2,11 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
+## [Unreleased]
+
+### Changed
+- `devGuard.removalMode` now defaults to `manual`. A fresh install shows one batched notification with an **Uninstall** button instead of uninstalling flagged extensions by itself. `auto` is an explicit opt-in, and the pane states that a removal cannot be undone. Installs that never changed the setting move to `manual` as well.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added

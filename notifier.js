@@ -144,7 +144,7 @@ function forgetFileHashesInLedger(context, hashes) {
 /**
  * Shows a one-time disclosure when `devGuard.removalMode` is `auto`.
  */
-function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'auto', telemetry) {
+function showAutoModeDisclosureOnce(context, vscodeApi, removalMode = 'manual', telemetry) {
     if (removalMode !== 'auto' || !context || !context.globalState || !vscodeApi) return;
     try {
         if (context.globalState.get(AUTO_DISCLOSURE_KEY)) return;
@@ -218,7 +218,7 @@ async function uninstallFindings(vscodeApi, findings, telemetry, eventName) {
  *     do not repeat those. Auto mode shows the reload toast and a failed
  *     uninstall prompt again on the next scan when that toast is not already up.
  */
-async function handleAuditFindings({ context, vscodeApi, findings, trigger, removalMode = 'auto', telemetry, now = Date.now(), onRemoved, pendingReload = false }) {
+async function handleAuditFindings({ context, vscodeApi, findings, trigger, removalMode = 'manual', telemetry, now = Date.now(), onRemoved, pendingReload = false }) {
     const reportRemoved = (items, action) => { try { onRemoved?.(items, action); } catch (_e) { /* never break the audit */ } };
     let ledger = loadLedger(context);
     const all = Array.isArray(findings) ? findings : [];

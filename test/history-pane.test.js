@@ -407,3 +407,12 @@ test('pane page has a Show more pager for every list section', () => {
     assert.ok(html.includes('const PAGE = 5;'));
     assert.ok(html.includes('delete state.shown[key]'), 'collapsing a dropdown resets Show more');
 });
+
+test('a missing removalMode renders Manual, and Auto states that removal is permanent', () => {
+    const manual = renderParts({ status: {}, runs: [], nonce: 'n' }).setup;
+    assert.ok(manual.includes('<option value="manual" selected>Manual</option>'), 'manual is the default mode');
+    assert.ok(manual.includes('asks before removing'));
+
+    const auto = renderParts({ status: { removalMode: 'auto' }, runs: [], nonce: 'n' }).setup;
+    assert.ok(auto.includes('cannot be undone'), 'auto mode names the consequence in the pane');
+});
