@@ -407,3 +407,58 @@ test('pane page has a Show more pager for every list section', () => {
     assert.ok(html.includes('const PAGE = 5;'));
     assert.ok(html.includes('delete state.shown[key]'), 'collapsing a dropdown resets Show more');
 });
+
+test('a removed extension offers allow and reinstall, once, and not when already allowed', () => {
+    const now = Date.now();
+    const audit = [
+        { at: now - 10, type: 'removed', id: 'wrong.ext', version: '1.0.0', detail: 'auto' },
+        { at: now - 20, type: 'removed', id: 'wrong.ext', version: '1.0.0', detail: 'auto' },
+        { at: now - 30, type: 'removed', id: 'allowed.ext', version: '2.0.0', detail: 'on request' }
+    ];
+    const data = { status: { removalMode: 'auto' }, runs: [], audit, allowlist: ['allowed.ext'], nonce: 'n' };
+    const { audit: html } = renderParts(data);
+    assert.equal((html.match(/data-allow-reinstall="wrong\.ext"/g) || []).length, 1, 'one recovery button per id');
+    assert.ok(!html.includes('data-allow-reinstall="allowed.ext"'), 'an allowed extension needs no undo');
+    assert.match(html, /data-allow-reinstall="wrong\.ext"[^>]*>Allow and reinstall<\/button>/);
+
+    // After the reload the hero says Protected but the removal is still recent,
+    // so the notice under it must offer the same undo.
+    const cleanRun = [{ at: now, trigger: 'manual', installed: 1, findings: 0, removed: 0, advisoryCount: 5 }];
+    const hero = renderParts({ ...data, runs: cleanRun, audit }).hero;
+    assert.ok(hero.includes('Protected'));
+    assert.ok(hero.includes('data-allow-reinstall="wrong.ext"'), 'the removal notice offers the undo');
+    assert.ok(hero.includes('flagged wrongly'), 'the notice names the false-positive case');
+
+    // Two removals: the hero cannot pick one, so it points at the audit log.
+    const two = renderParts({ ...data, runs: cleanRun, audit: [...audit, { at: now - 5, type: 'removed', id: 'other.ext', version: '1.0.0' }] }).hero;
+    assert.ok(!two.includes('data-allow-reinstall='), 'no ambiguous button when several were removed');
+    assert.ok(two.includes('audit log'));
+});
+
+test('the removal notice ignores removals older than a day', () => {
+    const at = Date.now() - 25 * 60 * 60 * 1000;
+    const hero = renderParts({
+        status: {}, runs: [{ at, trigger: 'manual', installed: 1, findings: 0, removed: 0 }],
+        audit: [{ at, type: 'removed', id: 'old.ext', version: '1' }], nonce: 'n'
+    }).hero;
+    assert.ok(!hero.includes('data-allow-reinstall='));
+});
+
+test('the pending-reload notice offers the undo for a single removal', () => {
+    const pending = renderParts({
+        status: { pendingReload: 1, removedIds: ['wrong.ext'] },
+        runs: [{ at: Date.now(), trigger: 'manual', installed: 2, findings: 0, removed: 1 }],
+        audit: [{ at: Date.now(), type: 'removed', id: 'wrong.ext', version: '1', detail: 'auto' }], nonce: 'n'
+    }).hero;
+    assert.match(pending, /Removed extensions stay loaded until you reload\. If that was a mistake/);
+    assert.ok(pending.includes('data-allow-reinstall="wrong.ext"'));
+    assert.ok(pending.includes('id="reload"'), 'reload stays the primary action');
+
+    const many = renderParts({
+        status: { pendingReload: 2, removedIds: ['wrong.ext', 'other.ext'] },
+        runs: [{ at: Date.now(), trigger: 'manual', installed: 2, findings: 0, removed: 2 }],
+        audit: [], nonce: 'n'
+    }).hero;
+    assert.ok(!many.includes('data-allow-reinstall='), 'no ambiguous button for two removals');
+    assert.ok(many.includes('from the audit log'));
+});

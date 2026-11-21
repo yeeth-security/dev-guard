@@ -40,15 +40,15 @@ function renderHeader() {
  * Hero: score ring + tinted verdict banner, like pkgscan's package card.
  * When the verdict is "bad", the threats are named right under the warning
  * so the user sees WHAT was found without opening any section.
- * When it is Protected and something was removed recently, a warning under
- * the banner points at the security guide.
+ * While a removal is waiting for a reload, and for a day after one, a warning
+ * under the banner links the security guide and offers to undo the removal.
  */
-function renderHero(v, threats = [], removalNotice = '') {
+function renderHero(v, threats = [], removalNotice = '', removedIds = []) {
     return `<header class="hero hero--${v.tone} card">
       ${ringSvg(v)}
       <div class="hero__text"><div class="banner">${v.title}</div><div class="hero__sub">${v.sub}</div></div>
       ${v.tone === 'bad' ? renderHeroThreats(threats) : ''}
-      ${v.pendingReload > 0 ? renderReloadNotice() : ''}
+      ${v.pendingReload > 0 ? renderReloadNotice(removedIds) : ''}
       ${v.tone === 'ok' && removalNotice ? renderRemovalGuideNotice(removalNotice) : ''}
     </header>`;
 }
@@ -60,11 +60,13 @@ const RECENT_REMOVAL_MS = 24 * 60 * 60 * 1000;
 /**
  * Sentence for the Protected hero when Dev-Guard removed an extension or
  * quarantined a file in the last day. A file that was put back does not count.
- * Returns '' when there is nothing to warn about.
+ * Returns null when there is nothing to warn about. `ids` are the removed
+ * extension ids, so the notice can offer the undo when there is only one.
  */
-function recentRemovalNotice(audit, now = Date.now()) {
+function recentRemovalNotice(audit, allowlist = [], now = Date.now()) {
     const events = Array.isArray(audit) ? audit : [];
-    let extensions = 0;
+    const allowed = new Set((Array.isArray(allowlist) ? allowlist : []).map(id => String(id || '').toLowerCase()));
+    const ids = [];
     // Latest event per file. A restore after a quarantine clears that file.
     const files = new Map();
     for (const event of events) {
@@ -72,7 +74,10 @@ function recentRemovalNotice(audit, now = Date.now()) {
         const at = Number(event.at) || 0;
         if (now - at > RECENT_REMOVAL_MS) continue;
         if (event.type === 'removed') {
-            extensions += 1;
+            // An extension that is allowlisted now was already recovered (or
+            // deliberately trusted), so its removal is not an open loose end.
+            const removedId = String(event.id || '').toLowerCase();
+            if (removedId && !allowed.has(removedId) && !ids.includes(removedId)) ids.push(removedId);
             continue;
         }
         if (event.type !== 'quarantined' && event.type !== 'restored') continue;
@@ -80,38 +85,59 @@ function recentRemovalNotice(audit, now = Date.now()) {
         const prev = files.get(id);
         if (!prev || at >= prev.at) files.set(id, { type: event.type, at });
     }
+    const extensions = ids.length;
     let fileCount = 0;
     for (const state of files.values()) {
         if (state.type === 'quarantined') fileCount += 1;
     }
-    if (extensions === 0 && fileCount === 0) return '';
+    if (extensions === 0 && fileCount === 0) return null;
     const bits = [];
     if (extensions === 1) bits.push('An extension was removed');
     else if (extensions > 1) bits.push('Extensions were removed');
     if (fileCount === 1) bits.push(extensions ? 'a file was quarantined' : 'A file was quarantined');
     else if (fileCount > 1) bits.push(extensions ? 'files were quarantined' : 'Files were quarantined');
-    return `${bits.join(' and ')} recently. Follow the security guide to check for anything left behind.`;
+    let text = `${bits.join(' and ')} recently. Follow the security guide to check for anything left behind.`;
+    if (extensions === 1) text += ' If it was flagged wrongly, allow and reinstall it.';
+    else if (extensions > 1) text += ' If one was flagged wrongly, allow and reinstall it from the audit log.';
+    return { text, ids };
 }
 
-/** Warning under the Protected banner. The link is the cleanup guide. */
-function renderRemovalGuideNotice(text) {
+/**
+ * Warning under the Protected banner. The link is the cleanup guide; with a
+ * single removed extension the notice also offers the in-pane undo.
+ */
+function renderRemovalGuideNotice(notice) {
+    const text = typeof notice === 'string' ? notice : String((notice && notice.text) || '');
+    const ids = notice && Array.isArray(notice.ids) ? notice.ids : [];
+    const restore = ids.length === 1
+        ? `<button type="button" class="link" data-allow-reinstall="${esc(ids[0])}" title="Add this extension to the allowlist and install the latest version again">Allow and reinstall</button>`
+        : '';
     return `<div class="notice notice--guide">
       <div class="notice__text">${ICON_WARN}${esc(text)}</div>
       <div class="notice__actions">
-        <button type="button" class="link" data-url="${esc(REMOVAL_GUIDE_URL)}">Security guide ↗</button>
+        ${restore}<button type="button" class="link" data-url="${esc(REMOVAL_GUIDE_URL)}">Security guide ↗</button>
       </div>
     </div>`;
 }
 
 /**
  * Warning shown under the verdict while a removed extension is still loaded.
- * Reload actually unloads it; the guide covers what else to check.
+ * Reload actually unloads it; the guide covers what else to check. With one
+ * removed extension the notice also offers the in-pane undo, because this is
+ * the moment right after an automatic removal.
  */
-function renderReloadNotice() {
+function renderReloadNotice(removedIds = []) {
+    const ids = Array.isArray(removedIds) ? removedIds.filter(Boolean) : [];
+    const restore = ids.length === 1
+        ? `<button type="button" class="link" data-allow-reinstall="${esc(ids[0])}" title="Add this extension to the allowlist and install the latest version again">Allow and reinstall</button>`
+        : '';
+    const mistake = ids.length === 1
+        ? ' If that was a mistake, allow and reinstall it.'
+        : (ids.length > 1 ? ' If one was a mistake, allow and reinstall it from the audit log.' : '');
     return `<div class="notice">
-      <div class="notice__text">${ICON_WARN}Removed extensions stay loaded until you reload.</div>
+      <div class="notice__text">${ICON_WARN}Removed extensions stay loaded until you reload.${esc(mistake)}</div>
       <div class="notice__actions">
-        <button type="button" id="reload" class="btn btn--warn">Reload window</button>
+        ${restore}<button type="button" id="reload" class="btn btn--warn">Reload window</button>
         <button type="button" class="link" data-url="${esc(REMOVAL_GUIDE_URL)}">What to do next ↗</button>
       </div>
     </div>`;
@@ -185,7 +211,8 @@ function renderParts({ status, runs = [], extensionThreats, fileThreats = [], qu
         hero: renderHero(
             computeVerdict({ status: s, runs, fileThreats, threatCount: liveThreats.length, scanning }),
             liveThreats,
-            recentRemovalNotice(audit)
+            recentRemovalNotice(audit, allowlist),
+            s.removedIds
         ),
         actions: renderActions(scanning),
         setup: renderSetup(s, runs[0], hardening),
