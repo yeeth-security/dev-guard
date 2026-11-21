@@ -84,6 +84,7 @@ function createPane({
     onUnallowFile,
     getExtensionThreats,
     onRemoveExtension,
+    onRestoreExtension,
     telemetry
 }) {
     /** @type {vscode.WebviewView|null} */
@@ -285,6 +286,38 @@ function createPane({
                     } else {
                         telemetry?.record('allowlist_cancelled', { extension_id: id, from: 'pane' });
                     }
+                }
+                break;
+            case 'allowReinstall':
+                if (!id) return;
+                {
+                    // Undo a wrong removal. Same trust decision as Allow, plus
+                    // an install, so say both out loud before doing either.
+                    const choice = await vscode.window.showWarningMessage(
+                        `Allow '${id}' and reinstall it? DevGuard will stop flagging and removing it, and install the latest version from your registry. Only do this if you have checked the advisory and believe it is wrong.`,
+                        { modal: true }, 'Allow and reinstall'
+                    );
+                    if (choice !== 'Allow and reinstall') {
+                        telemetry?.record('allowlist_cancelled', { extension_id: id, from: 'pane_removal' });
+                        break;
+                    }
+                    await dismissActionNotices(vscode, 'extension');
+                    await addToAllowlist(vscode, id);
+                    audit.record({ type: 'allowed', id });
+                    telemetry?.record('allowlist_added', { extension_id: id, from: 'pane_removal' });
+                    try {
+                        await vscode.commands.executeCommand('workbench.extensions.installExtension', id);
+                        onRestoreExtension?.(id);
+                        telemetry?.record('removal_recovered', { extension_id: id });
+                    } catch (_error) {
+                        // Keep the allowlist entry: a manual install must not be
+                        // flagged and removed again by the next scan.
+                        void vscode.window.showErrorMessage(
+                            `DevGuard: could not reinstall '${id}'. It is allowlisted, so install it again from the Extensions view when you are ready.`
+                        );
+                        telemetry?.record('removal_recovery_failed', { extension_id: id });
+                    }
+                    refresh();
                 }
                 break;
             case 'unallow':

@@ -2,6 +2,11 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
+## [Unreleased]
+
+### Added
+- **Allow and reinstall** on a removal in the audit log and on the recent-removal notice under the verdict. It asks for confirmation, adds the extension to `devGuard.allowlist`, and installs the latest version again, so a wrong removal no longer needs a manual Settings edit. If the install fails, the allowlist entry is kept and the pane says how to finish.
+
 ## [0.1.2] - 2026-11-04
 
 ### Added

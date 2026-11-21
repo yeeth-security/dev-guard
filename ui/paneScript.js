@@ -122,6 +122,7 @@ const PANE_SCRIPT = `
     else if (d.url) post('openUrl', { url: d.url });
     else if (d.removeExtension) post('removeExtension', { id: d.removeExtension });
     else if (d.allow) post('allow', { id: d.allow });
+    else if (d.allowReinstall) post('allowReinstall', { id: d.allowReinstall });
     else if (d.unallow) post('unallow', { id: d.unallow });
     else if (d.quarantineFile) post('quarantineFile', { filePath: d.quarantineFile });
     else if (d.restoreFile) post('restoreFile', { key: d.restoreFile });

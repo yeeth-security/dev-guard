@@ -323,6 +323,16 @@ function activate(context) {
                 }
             });
         },
+        // The pane allowlisted and reinstalled a wrongly removed extension.
+        // It is live again, so the pending-reload counter and reminder no
+        // longer describe this session.
+        onRestoreExtension: id => {
+            const key = String(id || '').toLowerCase();
+            removedThisSession.delete(key);
+            if (pendingReloadNotice && String(pendingReloadNotice.extensionId || '').toLowerCase() === key) {
+                pendingReloadNotice = null;
+            }
+        },
         onAllowFile: async sha256 => {
             const target = latestFileThreats.find(f => f.sha256 === sha256);
             const name = (target && (target.displayPath || target.fileName)) || '';
@@ -761,6 +771,8 @@ function getPaneStatus(context, proxyController) {
     const proxyStatus = proxyController ? proxyController.getStatus() : { proxyEnabled: true, proxyRunning: false, proxyUrl: null };
     return {
         pendingReload: removedThisSession.size,
+        // Named so the reload notice can offer the undo for a single removal.
+        removedIds: [...removedThisSession],
         registry,
         registryMethod: method,
         detectedRegistry: detected,

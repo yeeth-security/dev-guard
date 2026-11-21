@@ -298,6 +298,7 @@ function renderAudit(events, allowlist, allowedFiles = [], quarantined = []) {
     const seenAllowed = new Set();
     const seenAllowedFiles = new Set();
     const seenQuarantined = new Set();
+    const seenRemoved = new Set();
     return timeline(events, e => {
         const [label, baseTone] = AUDIT_LABELS[e.type] || [esc(e.type), ''];
         const tone = e.type === 'scanned' && e.flagged ? 'bad' : baseTone;
@@ -321,7 +322,17 @@ function renderAudit(events, allowlist, allowedFiles = [], quarantined = []) {
                 : '';
             action = `${restoreBtn}${guideLink('link link--sm')}`;
         } else if (e.type === 'removed') {
-            action = guideLink('link link--sm');
+            // Recovery for a wrong removal. The live threat row already has
+            // Allow; after an uninstall the row is gone, so the audit entry is
+            // the only place the user can still undo it. One button per id:
+            // auto mode can log the same removal more than once.
+            const removedId = String(e.id || '');
+            const canRestore = Boolean(removedId) && !allowed.has(removedId.toLowerCase()) && !seenRemoved.has(removedId.toLowerCase());
+            if (canRestore) seenRemoved.add(removedId.toLowerCase());
+            const restore = canRestore
+                ? `<button type="button" class="link link--sm" data-allow-reinstall="${esc(removedId)}" title="Add this extension to the allowlist and install the latest version again">Allow and reinstall</button>`
+                : '';
+            action = `${restore}${guideLink('link link--sm')}`;
         }
         return `<li class="evt evt--${tone || 'plain'}" data-row>
           <div class="run__head"><span class="run__time">${fmtClock(e.at)}</span><span class="evt__type ${tone}">${label}</span></div>
