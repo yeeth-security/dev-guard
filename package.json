@@ -27,6 +27,9 @@
         }
     },
     "main": "./extension.js",
+    "bin": {
+        "devguard-scan": "bin/devguard-scan.js"
+    },
     "contributes": {
         "commands": [
             {
