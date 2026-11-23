@@ -85,13 +85,14 @@ function analyzeSettingsJson(text, context = {}) {
         const serialized = JSON.stringify(val || '');
         if (key === 'task.allowAutomaticTasks') {
             // "on" is the current opt-in and `true` is the legacy boolean form.
-            // "off", "auto", and a missing key keep the prompt and stay quiet.
-            if (val === true || String(val).toLowerCase() === 'on') {
+            // Only report it next to a folder-open task: on its own the setting
+            // is inert, and many healthy repositories set it deliberately.
+            if ((val === true || String(val).toLowerCase() === 'on') && hasFolderOpenTask) {
                 matches.push({
                     rule: 'C2_COMMUNICATION',
                     technique: 'T1059',
-                    severity: hasFolderOpenTask ? 'critical' : 'high',
-                    detail: `Workspace setting "task.allowAutomaticTasks" is ${JSON.stringify(val)}, which removes the automatic-task prompt.${hasFolderOpenTask ? ' A folder-open task in this workspace runs without confirmation.' : ''}`
+                    severity: 'critical',
+                    detail: `Workspace setting "task.allowAutomaticTasks" is ${JSON.stringify(val)}, which removes the automatic-task prompt. A folder-open task in this workspace runs without confirmation.`
                 });
             }
         } else if (/^terminal\.integrated\.(env|profiles|automationProfile|shell)\b/.test(key)) {

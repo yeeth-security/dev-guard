@@ -180,20 +180,26 @@ function workspaceIo(repo, files) {
     };
 }
 
-test('workspace settings flag task.allowAutomaticTasks "on" and true, not "off" or "auto"', () => {
-    const on = analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'on' }));
-    assert.equal(on.length, 1);
-    assert.equal(on[0].severity, 'high');
-    assert.match(on[0].detail, /task\.allowAutomaticTasks/);
-    assert.match(on[0].detail, /removes the automatic-task prompt/);
+test('task.allowAutomaticTasks is inert without a folder-open task and reported with one', () => {
+    const on = JSON.stringify({ 'task.allowAutomaticTasks': 'on' });
+    const legacy = JSON.stringify({ 'task.allowAutomaticTasks': true });
+    const withOpenTask = { hasFolderOpenTask: true };
 
-    const legacy = analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': true }));
-    assert.equal(legacy.length, 1);
-    assert.equal(legacy[0].severity, 'high');
+    // Without a folder-open task the setting cannot start anything by itself.
+    // Healthy repositories set it deliberately, so it stays quiet here.
+    assert.deepEqual(analyzeSettingsJson(on), []);
+    assert.deepEqual(analyzeSettingsJson(legacy), []);
 
-    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'off' })), []);
-    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'auto' })), []);
-    assert.deepEqual(analyzeSettingsJson(JSON.stringify({})), []);
+    const reported = analyzeSettingsJson(on, withOpenTask);
+    assert.equal(reported.length, 1);
+    assert.equal(reported[0].severity, 'critical');
+    assert.match(reported[0].detail, /task\.allowAutomaticTasks/);
+    assert.match(reported[0].detail, /removes the automatic-task prompt/);
+
+    assert.equal(analyzeSettingsJson(legacy, withOpenTask).length, 1);
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'off' }), withOpenTask), []);
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'auto' }), withOpenTask), []);
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({}), withOpenTask), []);
 });
 
 test('task.allowAutomaticTasks is promoted to critical when the same workspace has a folder-open task', () => {
