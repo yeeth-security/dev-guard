@@ -19,13 +19,16 @@ function run(args) {
     return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
 }
 
-test('attack fixture exits 1 and names the folder-open task', () => {
+test('attack fixture exits 1 and names all three primitives', () => {
     const result = run([SHAPE]);
     assert.equal(result.status, 1);
+    assert.match(result.stdout, /^critical C2_COMMUNICATION \.vscode\/settings\.json/m);
+    assert.match(result.stdout, /task\.allowAutomaticTasks/);
+    assert.match(result.stdout, /^high C2_COMMUNICATION \.vscode\/launch\.json/m);
+    assert.match(result.stdout, /preLaunchTask "graphtage-format"/);
     assert.match(result.stdout, /^high C2_COMMUNICATION \.vscode\/tasks\.json/m);
-    assert.match(result.stdout, /graphtage-format/);
     assert.match(result.stdout, /folderOpen/);
-    assert.match(result.stdout, /summary: 0 critical, 1 high, 0 medium, 0 low/);
+    assert.match(result.stdout, /summary: 1 critical, 2 high, 0 medium, 0 low/);
 });
 
 test('clean fixture exits 0 and prints no findings', () => {
@@ -40,10 +43,9 @@ test('--json returns findings and a summary', () => {
     assert.equal(result.status, 1);
     const payload = JSON.parse(result.stdout);
     assert.ok(Array.isArray(payload.findings), 'findings is an array');
-    assert.equal(payload.findings.length, 1);
-    assert.equal(payload.findings[0].file, '.vscode/tasks.json');
-    assert.equal(payload.findings[0].severity, 'high');
-    assert.deepEqual(payload.summary, { critical: 0, high: 1, medium: 0, low: 0 });
+    assert.equal(payload.findings.length, 3);
+    assert.ok(payload.findings.every(f => f.file.startsWith('.vscode/')));
+    assert.deepEqual(payload.summary, { critical: 1, high: 2, medium: 0, low: 0 });
 });
 
 test('a missing path exits 2', () => {

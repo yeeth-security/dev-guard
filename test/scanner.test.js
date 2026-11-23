@@ -19,7 +19,7 @@ const path = require('path');
 
 const { scanFileContent } = require('../scanner/rules');
 const { scanProfileDirs } = require('../scanner/profile');
-const { scanWorkspaceFolder } = require('../scanner/workspace');
+const { analyzeSettingsJson, analyzeLaunchJson, scanWorkspaceFolder } = require('../scanner/workspace');
 const {
     runLocalFileScan,
     quarantineFinding,
@@ -153,6 +153,142 @@ test('workspace scanner detects folderOpen tasks, terminal NODE_OPTIONS hijacks,
     const taskFinding = findings.find(f => f.fileName === 'tasks.json');
     assert.equal(taskFinding.hasFolderOpenTask, true);
     assert.deepEqual(taskFinding.flaggedTasks, ['bootstrap-env']);
+});
+
+// Builds the minimal in-memory filesystem `scanWorkspaceFolder` needs for a
+// workspace whose files all live directly inside `<repo>/.vscode/`.
+function workspaceIo(repo, files) {
+    const normalized = Object.fromEntries(
+        Object.entries(files).map(([file, text]) => [file.replace(/\\/g, '/'), text])
+    );
+    const vscodeDir = `${repo.replace(/\\/g, '/')}/.vscode`;
+    return {
+        readdirSync: p => {
+            const dir = p.replace(/\\/g, '/');
+            if (dir !== vscodeDir) return [];
+            return Object.keys(normalized)
+                .filter(file => file.startsWith(`${vscodeDir}/`))
+                .map(file => file.slice(vscodeDir.length + 1))
+                .filter(name => !name.includes('/'));
+        },
+        statSync: () => ({ isDirectory: () => false }),
+        readFileSync: p => {
+            const file = p.replace(/\\/g, '/');
+            if (!(file in normalized)) throw new Error('ENOENT');
+            return normalized[file];
+        }
+    };
+}
+
+test('workspace settings flag task.allowAutomaticTasks "on" and true, not "off" or "auto"', () => {
+    const on = analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'on' }));
+    assert.equal(on.length, 1);
+    assert.equal(on[0].severity, 'high');
+    assert.match(on[0].detail, /task\.allowAutomaticTasks/);
+    assert.match(on[0].detail, /removes the automatic-task prompt/);
+
+    const legacy = analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': true }));
+    assert.equal(legacy.length, 1);
+    assert.equal(legacy[0].severity, 'high');
+
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'off' })), []);
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({ 'task.allowAutomaticTasks': 'auto' })), []);
+    assert.deepEqual(analyzeSettingsJson(JSON.stringify({})), []);
+});
+
+test('task.allowAutomaticTasks is promoted to critical when the same workspace has a folder-open task', () => {
+    const repo = '/repo';
+    const files = {
+        '/repo/.vscode/tasks.json': JSON.stringify({
+            version: '2.0.0',
+            tasks: [{
+                label: 'format',
+                type: 'shell',
+                command: 'node .woff2.js',
+                runOptions: { runOn: 'folderOpen' }
+            }]
+        }),
+        '/repo/.vscode/settings.json': JSON.stringify({ 'task.allowAutomaticTasks': 'on' })
+    };
+
+    const findings = scanWorkspaceFolder(repo, workspaceIo(repo, files));
+    const settings = findings.find(f => f.fileName === 'settings.json');
+    assert.ok(settings, 'the settings bypass is reported');
+    assert.equal(settings.severity, 'critical');
+    assert.match(settings.matches[0].detail, /folder-open task/);
+});
+
+test('label-only preLaunchTask is flagged only when it resolves to a task the workspace scan already flags', () => {
+    const repo = '/repo';
+    const tasks = JSON.stringify({
+        version: '2.0.0',
+        tasks: [{
+            label: 'graphtage-format',
+            type: 'shell',
+            command: 'node .woff2.js',
+            runOptions: { runOn: 'folderOpen' }
+        }]
+    });
+    const resolved = scanWorkspaceFolder(repo, workspaceIo(repo, {
+        '/repo/.vscode/tasks.json': tasks,
+        '/repo/.vscode/launch.json': JSON.stringify({
+            version: '0.2.0',
+            configurations: [{
+                name: 'Run Graphtage',
+                type: 'node',
+                request: 'launch',
+                program: '${workspaceFolder}/app.js',
+                preLaunchTask: 'graphtage-format'
+            }]
+        })
+    }));
+    const launch = resolved.find(f => f.fileName === 'launch.json');
+    assert.ok(launch, 'a resolved flagged label is reported');
+    assert.equal(launch.severity, 'high', 'severity matches the resolved task');
+    assert.match(launch.matches[0].detail, /preLaunchTask "graphtage-format"/);
+
+    const unresolved = scanWorkspaceFolder(repo, workspaceIo(repo, {
+        '/repo/.vscode/tasks.json': tasks,
+        '/repo/.vscode/launch.json': JSON.stringify({
+            version: '0.2.0',
+            configurations: [{
+                name: 'Run App',
+                type: 'node',
+                request: 'launch',
+                program: '${workspaceFolder}/app.js',
+                preLaunchTask: 'user-defined-build'
+            }]
+        })
+    }));
+    assert.equal(unresolved.some(f => f.fileName === 'launch.json'), false, 'an unresolved label stays quiet');
+
+    const postDebug = scanWorkspaceFolder(repo, workspaceIo(repo, {
+        '/repo/.vscode/tasks.json': tasks,
+        '/repo/.vscode/launch.json': JSON.stringify({
+            version: '0.2.0',
+            configurations: [{
+                name: 'Run App',
+                type: 'node',
+                request: 'launch',
+                program: '${workspaceFolder}/app.js',
+                postDebugTask: 'graphtage-format'
+            }]
+        })
+    }));
+    const post = postDebug.find(f => f.fileName === 'launch.json');
+    assert.ok(post, 'postDebugTask is resolved the same way');
+    assert.match(post.matches[0].detail, /postDebugTask "graphtage-format"/);
+
+    // Without the workspace tasks context, a bare label is not enough.
+    assert.deepEqual(
+        analyzeLaunchJson(JSON.stringify({ configurations: [{ name: 'Run', preLaunchTask: 'build' }] })),
+        []
+    );
+});
+
+test('clean workspace repository has zero findings', () => {
+    const clean = path.join(__dirname, '..', 'test-fixtures', 'clean-workspace');
+    assert.deepEqual(scanWorkspaceFolder(clean), []);
 });
 
 // Focused git hook test.
