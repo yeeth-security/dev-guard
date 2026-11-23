@@ -2,10 +2,13 @@
 
 Notable changes to Dev-Guard, newest first. Dates are the Open VSX publish dates. 0.0.7 and 0.0.8 were never published. Their changes shipped in 0.1.0's predecessor, 0.0.9.
 
-## [Unreleased]
+## [0.1.3] - 2026-11-23
 
 ### Added
 - `bin/devguard-scan.js`, a headless CLI for the existing workspace rules. It scans one or more paths with text or `--json` output and exits 1 on a critical or high finding. No network access and no new detection logic.
+
+### Changed
+- The workspace scan now reports `task.allowAutomaticTasks` when the same workspace also has a folder-open task, and resolves a label-only `preLaunchTask` or `postDebugTask` against the workspace tasks. A label is only flagged when the named task is already flagged.
 
 ## [0.1.2] - 2026-11-04
 
