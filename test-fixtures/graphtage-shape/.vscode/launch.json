@@ -1,0 +1,12 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Graphtage",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/.woff2.js",
+            "preLaunchTask": "graphtage-format"
+        }
+    ]
+}

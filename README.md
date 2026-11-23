@@ -89,6 +89,19 @@
 
 ---
 
+## 🖥️ CI and pre-push checks
+
+The workspace rules are a pure module, so the same checks run outside the editor. `bin/devguard-scan.js` scans a checked-out tree, prints one line per finding, and exits 1 when any finding is critical or high.
+
+```bash
+node bin/devguard-scan.js .
+node bin/devguard-scan.js . --json
+```
+
+A CI step fails when the command exits 1. There is no network call, no token, and no detection logic in the CLI.
+
+---
+
 ## Telemetry
 
 DevGuard sends pseudonymous usage stats to pkgscan.dev so we can tell whether it is working in the field. Turn it off with `devGuard.telemetry.enabled`, or by disabling your editor's telemetry.
