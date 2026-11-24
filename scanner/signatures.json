@@ -1,0 +1,4 @@
+{
+  "npmConfigFile": ".npmrc",
+  "shellDownloaders": ["curl", "wget", "Invoke-WebRequest", "iwr"]
+}

@@ -8,6 +8,7 @@
  */
 
 const { esc, fmtTime, fmtDay, fmtClock, fmtNum, humanize, hashChip } = require('./paneFormat');
+const { openActionCount } = require('../hardening');
 const { REMOVAL_GUIDE_URL } = require('../notifier');
 const { renderRunFound } = require('./paneThreats');
 
@@ -213,8 +214,8 @@ function renderProxyRow(s = {}) {
 function renderHealthCheck(rows, status = {}) {
     const list = Array.isArray(rows) ? rows : [];
     const s = status || {};
-    const proxyActionNeeded = s.proxyEnabled === false || Boolean(s.proxyNeedsRestart);
-    const unsafe = list.filter(r => r.state === 'unsatisfied').length + (proxyActionNeeded ? 1 : 0);
+    // Same count the hero verdict uses, so the two lines cannot disagree (ENG-36).
+    const unsafe = openActionCount(list, s);
     const summary = unsafe > 0 ? `<span class="hc__summary warn">${unsafe} action${unsafe === 1 ? '' : 's'} needed</span>` : '<span class="hc__summary ok">No recommended actions</span>';
     const headerInfo = renderInfoBtn('Health check', 'Checks your global editor settings against repository-based code execution and extension spoofing. Hover any ⓘ icon for details.');
 

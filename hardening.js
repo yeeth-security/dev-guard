@@ -205,6 +205,17 @@ const readState = (inspectFn, options) => CHECKS.map(check => readCheck(inspectF
 const openCount = rows => (Array.isArray(rows) ? rows : []).filter(r => r.state === 'unsatisfied').length;
 const allSatisfied = rows => Array.isArray(rows) && rows.length > 0 && rows.every(r => r.state === 'satisfied');
 
+/**
+ * Actions still open for the user: the unsatisfied editor checks plus the
+ * marketplace proxy when it is off or waiting for the restart that activates
+ * it (ENG-36). The Health check summary and the pane verdict both read this,
+ * so the headline can never count fewer actions than the list below it.
+ */
+function openActionCount(rows, { proxyEnabled = true, proxyNeedsRestart = false } = {}) {
+    const proxyAction = proxyEnabled === false || Boolean(proxyEnabled && proxyNeedsRestart);
+    return openCount(rows) + (proxyAction ? 1 : 0);
+}
+
 /** Writes one setting at Global scope and catches any editor error. */
 async function applySetting(updateFn, key, value) {
     if (typeof updateFn !== 'function' || !key) return { ok: false, applied: false, error: 'Settings are not writable in this editor.' };
@@ -303,6 +314,6 @@ function versionBucket(version) {
 module.exports = {
     CHECKS, AUTOMATIC_TASKS, AUTO_UPDATE_DELAY, CURSOR_COOLDOWN_KEY, TRUST_STARTUP_PROMPT,
     IGNORE_RECOMMENDATIONS, WORKSPACE_TRUST_ENABLED, splitSettingKey,
-    readState, openCount, allSatisfied, applySetting, applyCheck,
+    readState, openCount, openActionCount, allSatisfied, applySetting, applyCheck,
     summarizeHealthPosture, notifyUnmetHealthChecks, versionBucket
 };

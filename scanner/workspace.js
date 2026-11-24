@@ -1,24 +1,38 @@
 /**
- * Workspace `.vscode/`, tasks, settings, `.git/hooks`, and `.npmrc` scanner (`scanner/workspace.js`).
+ * Workspace `.vscode/`, tasks, settings, `.git/hooks`, and npm config scanner
+ * (`scanner/workspace.js`).
  *
  * Why this file exists:
  *   Malicious git repositories stage scripts and manifests inside `.vscode/`
  *   and trigger them using `.vscode/tasks.json` (`runOn: "folderOpen"`),
  *   `.vscode/launch.json`, `.vscode/settings.json` terminal/env overrides,
- *   `.git/hooks/`, or `.npmrc`. This module inspects opened workspace folders
- *   for all of these persistence and auto-execution vectors.
+ *   `.git/hooks/`, or the npm config file. This module inspects opened
+ *   workspace folders for all of these persistence and auto-execution vectors.
  *
  * Design:
  *   - Pure module with no `vscode` import so every check is unit-testable.
  *   - Strips comments and trailing commas (JSONC) before parsing VS Code JSON files.
  *   - Records flagged task labels and `hasFolderOpenTask` so the active task
  *     interceptor can terminate running malicious tasks immediately.
+ *   - Signature literals come from `signatures.json` (see `rules.js`).
  */
 
 const fs = require('fs');
 const path = require('path');
-const { MAX_SCAN_BYTES, sha256Text, highestSeverity, scanFileContent } = require('./rules');
+const SIGNATURES = require('./signatures.json');
+const { MAX_SCAN_BYTES, NPM_CONFIG_FILE, sha256Text, highestSeverity, scanFileContent } = require('./rules');
 const { SCRIPT_EXT_RE, STAGED_MANIFEST_NAMES, PORTABLE_NODE_RE } = require('./profile');
+
+/** Downloaders and script tokens that make a workspace task or hook suspicious. */
+const SUSPICIOUS_SHELL_RE = new RegExp(
+    `\\.vscode[/\\\\]|\\b(?:${SIGNATURES.shellDownloaders.join('|')}|eval|base64)\\b`,
+    'i'
+);
+/** Git hooks: any `.vscode` reference counts, not just a path into it. */
+const SUSPICIOUS_HOOK_RE = new RegExp(
+    `\\.vscode|\\b(?:${SIGNATURES.shellDownloaders.join('|')}|eval|base64)\\b`,
+    'i'
+);
 
 /** Strips `//` and `/* *\/` comments and trailing commas so JSONC files parse cleanly. */
 function parseJsonc(text) {
@@ -54,7 +68,7 @@ function analyzeTasksJson(text) {
         const runOn = t.runOptions && String(t.runOptions.runOn || '').toLowerCase();
         const cmdText = [t.command, ...(Array.isArray(t.args) ? t.args : [])].filter(Boolean).join(' ');
         const isAutoOpen = runOn === 'folderopen';
-        const callsSuspicious = /\.vscode[/\\]|\b(curl|wget|Invoke-WebRequest|iwr|eval|base64)\b/i.test(cmdText);
+        const callsSuspicious = SUSPICIOUS_SHELL_RE.test(cmdText);
 
         if (isAutoOpen || callsSuspicious) {
             if (isAutoOpen) hasFolderOpenTask = true;
@@ -120,7 +134,7 @@ function analyzeLaunchJson(text) {
     return matches;
 }
 
-/** Scans a single workspace folder for `.vscode/`, `.git/hooks/`, and `.npmrc` threats. */
+/** Scans a single workspace folder for `.vscode/`, `.git/hooks/`, and npm config threats. */
 function scanWorkspaceFolder(folderPath, io = {}) {
     const readdirSync = io.readdirSync || fs.readdirSync;
     const statSync = io.statSync || fs.statSync;
@@ -177,15 +191,15 @@ function scanWorkspaceFolder(folderPath, io = {}) {
         });
     }
 
-    // 2. Inspect <workspace>/.npmrc for script-shell hijacks.
-    const rootNpmrc = path.join(folderPath, '.npmrc');
+    // 2. Inspect <workspace>/npm-config for script-shell hijacks.
+    const rootNpmrc = path.join(folderPath, NPM_CONFIG_FILE);
     const npmrcText = readText(rootNpmrc, readFileSync);
     if (npmrcText) {
-        const matches = scanFileContent({ fileName: '.npmrc', content: npmrcText, inVscodeDir: false });
+        const matches = scanFileContent({ fileName: NPM_CONFIG_FILE, content: npmrcText, inVscodeDir: false });
         if (matches.length > 0) {
             findings.push({
-                id: `workspace:${rootNpmrc}`, scope: 'workspace', filePath: rootNpmrc, displayPath: '.npmrc',
-                fileName: '.npmrc', sha256: sha256Text(npmrcText), severity: highestSeverity(matches), matches
+                id: `workspace:${rootNpmrc}`, scope: 'workspace', filePath: rootNpmrc, displayPath: NPM_CONFIG_FILE,
+                fileName: NPM_CONFIG_FILE, sha256: sha256Text(npmrcText), severity: highestSeverity(matches), matches
             });
         }
     }
@@ -201,7 +215,7 @@ function scanWorkspaceFolder(folderPath, io = {}) {
         const hookText = readText(hookPath, readFileSync);
         if (!hookText) continue;
         const matches = scanFileContent({ fileName: hookName, content: hookText, inVscodeDir: false });
-        if (matches.length === 0 && /\.vscode|\b(curl|wget|Invoke-WebRequest|eval|base64)\b/i.test(hookText)) {
+        if (matches.length === 0 && SUSPICIOUS_HOOK_RE.test(hookText)) {
             matches.push({
                 rule: 'REMOTE_PAYLOAD', technique: 'T1105', severity: 'high',
                 detail: `Active Git hook (.git/hooks/${hookName}) invokes remote downloaders or .vscode scripts.`

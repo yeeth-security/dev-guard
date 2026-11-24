@@ -5,10 +5,10 @@
  *   Provides a single entry point for scanning both the user's global
  *   `~/.vscode/` profile directory and all opened workspace folders, filtering
  *   out allowlisted SHA-256 hashes, killing malicious running tasks, and
- *   watching `.vscode/`, `.git/hooks/`, and `.npmrc` for changes.
+ *   watching `.vscode/`, `.git/hooks/`, and the npm config file for changes.
  */
 
-const { SEVERITY_ORDER } = require('./rules');
+const { SEVERITY_ORDER, NPM_CONFIG_FILE } = require('./rules');
 const { scanProfileDirs } = require('./profile');
 const { scanWorkspaceFolder } = require('./workspace');
 const {
@@ -74,7 +74,7 @@ function runLocalFileScan(options = {}) {
 }
 
 /**
- * Watches `.vscode/**`, `.git/hooks/**`, `.npmrc`, and workspace folder additions
+ * Watches `.vscode/**`, `.git/hooks/**`, the npm config file, and workspace folder additions
  * so newly dropped payloads are scanned immediately.
  */
 function createWorkspaceWatchers({ vscodeApi, onTrigger } = {}) {
@@ -92,7 +92,7 @@ function createWorkspaceWatchers({ vscodeApi, onTrigger } = {}) {
     };
 
     if (typeof vscodeApi.workspace.createFileSystemWatcher === 'function') {
-        for (const glob of ['**/.vscode/**', '**/.git/hooks/**', '**/.npmrc']) {
+        for (const glob of ['**/.vscode/**', '**/.git/hooks/**', `**/${NPM_CONFIG_FILE}`]) {
             try {
                 const watcher = vscodeApi.workspace.createFileSystemWatcher(glob);
                 if (watcher.onDidCreate) disposables.push(watcher.onDidCreate(schedule));

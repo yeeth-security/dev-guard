@@ -474,7 +474,7 @@ function recordFileScanRun(context, history, trigger, fileThreats) {
 }
 
 /**
- * Scans user-profile (`~/.vscode`) and workspace (`.vscode/`, `.git/hooks`, `.npmrc`)
+ * Scans user-profile (`~/.vscode`) and workspace (`.vscode/`, `.git/hooks`, npm config)
  * files, logs findings to the Audit log and Scan log, terminates running malicious tasks,
  * and alerts the user.
  */

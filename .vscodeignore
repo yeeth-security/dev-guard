@@ -9,3 +9,4 @@ scripts/**
 !scripts/uninstall.js
 test/**
 test-fixtures/**
+.playwright-mcp/**
